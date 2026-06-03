@@ -1,0 +1,14 @@
+{
+  "drug_code": 11111,
+  "product_categorization": "Drug",
+  "class_e": "Human",
+  "class_name": "Human",
+  "brand_name": "SINEQUAN",
+  "descriptor": "10MG",
+  "number_of_ais": 1,
+  "ai_group_no": 9876,
+  "company_code": 551,
+  "last_update_date": "2005-06-30",
+  "drug_identification_number": "00326925",
+  "company_name": "PFIZER CANADA INC"
+}

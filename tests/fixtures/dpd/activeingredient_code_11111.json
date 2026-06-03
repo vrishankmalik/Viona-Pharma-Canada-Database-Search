@@ -1,0 +1,13 @@
+[
+  {
+    "drug_code": 11111,
+    "active_ingredient_code": 20001,
+    "ingredient_name": "DOXEPIN HYDROCHLORIDE",
+    "strength": "10",
+    "strength_unit": "MG",
+    "dosage_value": "1.00",
+    "dosage_unit": "CAP",
+    "base": "Y",
+    "nature": ""
+  }
+]

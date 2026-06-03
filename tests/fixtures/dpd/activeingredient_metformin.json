@@ -1,0 +1,24 @@
+[
+  {
+    "drug_code": 99999,
+    "active_ingredient_code": 10001,
+    "ingredient_name": "METFORMIN HYDROCHLORIDE",
+    "strength": "500",
+    "strength_unit": "MG",
+    "dosage_value": "1.00",
+    "dosage_unit": "TAB",
+    "base": "Y",
+    "nature": "MONOHYDRATE"
+  },
+  {
+    "drug_code": 99998,
+    "active_ingredient_code": 10002,
+    "ingredient_name": "METFORMIN HYDROCHLORIDE",
+    "strength": "850",
+    "strength_unit": "MG",
+    "dosage_value": "1.00",
+    "dosage_unit": "TAB",
+    "base": "Y",
+    "nature": "MONOHYDRATE"
+  }
+]

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Notice of Compliance Search</title></head>
+<body>
+<main>
+  <form method="post" action="/noc-ac/doSearch">
+    <input type="hidden" name="_csrf" value="TEST-CSRF-TOKEN-ABCDEF123456">
+    <label for="medicinalIngredient">Medicinal Ingredient</label>
+    <input type="text" id="medicinalIngredient" name="medicinalIngredient">
+    <label for="productName">Product Name</label>
+    <input type="text" id="productName" name="productName">
+    <label for="din">DIN</label>
+    <input type="text" id="din" name="din">
+    <label for="manufacturer">Manufacturer</label>
+    <input type="text" id="manufacturer" name="manufacturer">
+    <select name="submissionClass"><option value="0">All</option></select>
+    <select name="submissionType"><option value="0">All</option></select>
+    <select name="productType"><option value="0">All</option></select>
+    <input type="text" name="nocFromDate">
+    <input type="text" name="nocToDate">
+    <button type="submit" name="submit" value="Search">Search</button>
+  </form>
+</main>
+</body>
+</html>
