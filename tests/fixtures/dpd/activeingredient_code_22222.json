@@ -1,0 +1,13 @@
+[
+  {
+    "drug_code": 22222,
+    "active_ingredient_code": 30001,
+    "ingredient_name": "ETHCHLORVYNOL",
+    "strength": "200",
+    "strength_unit": "MG",
+    "dosage_value": "1.00",
+    "dosage_unit": "CAP",
+    "base": "Y",
+    "nature": ""
+  }
+]

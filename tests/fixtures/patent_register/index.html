@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Patent Register - Search</title></head>
+<body>
+<main>
+<form method="post" action="/pr-rdb/search">
+  <div>
+    <label for="medicinalIngredient">Medicinal Ingredient</label>
+    <select id="medicinalIngredient" name="medicinalIngredient">
+      <option value=""></option>
+      <option value="AMLODIPINE BESYLATE">AMLODIPINE BESYLATE</option>
+      <option value="ATORVASTATIN CALCIUM">ATORVASTATIN CALCIUM</option>
+      <option value="CANAGLIFLOZIN">CANAGLIFLOZIN</option>
+      <option value="DOXEPIN HYDROCHLORIDE">DOXEPIN HYDROCHLORIDE</option>
+      <option value="EMPAGLIFLOZIN">EMPAGLIFLOZIN</option>
+      <option value="METFORMIN HYDROCHLORIDE">METFORMIN HYDROCHLORIDE</option>
+      <option value="METFORMIN HYDROCHLORIDE / CANAGLIFLOZIN">METFORMIN HYDROCHLORIDE / CANAGLIFLOZIN</option>
+      <option value="METFORMIN HYDROCHLORIDE / SITAGLIPTIN PHOSPHATE">METFORMIN HYDROCHLORIDE / SITAGLIPTIN PHOSPHATE</option>
+      <option value="NORETHINDRONE">NORETHINDRONE</option>
+      <option value="ROSUVASTATIN CALCIUM">ROSUVASTATIN CALCIUM</option>
+      <option value="SITAGLIPTIN PHOSPHATE">SITAGLIPTIN PHOSPHATE</option>
+    </select>
+  </div>
+  <div>
+    <label for="brandName">Brand Name</label>
+    <select id="brandName" name="brandName">
+      <option value=""></option>
+      <option value="GLUMETZA">GLUMETZA</option>
+      <option value="JANUMET">JANUMET</option>
+      <option value="JANUVIA">JANUVIA</option>
+      <option value="LIPITOR">LIPITOR</option>
+      <option value="NORVASC">NORVASC</option>
+    </select>
+  </div>
+  <input type="text" name="patentNumber" id="patentNumber">
+  <input type="text" name="din" id="din">
+  <input type="text" name="cspNumber" id="cspNumber">
+  <button type="submit" name="search" value="Search">Search</button>
+</form>
+</main>
+</body>
+</html>

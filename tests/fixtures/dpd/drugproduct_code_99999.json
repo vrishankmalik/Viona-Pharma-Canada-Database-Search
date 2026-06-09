@@ -1,0 +1,14 @@
+{
+  "drug_code": 99999,
+  "product_categorization": "Drug",
+  "class_e": "Human",
+  "class_name": "Human",
+  "brand_name": "GLUCOPHAGE",
+  "descriptor": "500MG",
+  "number_of_ais": 1,
+  "ai_group_no": 7654,
+  "company_code": 300,
+  "last_update_date": "2022-03-15",
+  "drug_identification_number": "02229895",
+  "company_name": "SANOFI-AVENTIS CANADA INC"
+}
