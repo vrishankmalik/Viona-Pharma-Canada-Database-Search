@@ -101,7 +101,7 @@ def detect_stages(df: pd.DataFrame) -> dict[str, bool]:
         "preservatives", "ph", "colour", "shape", "size_mm", "weight",
     ]
     patent_cols = [c for c in cols if re.match(r"patent_\d+_number$", c)]
-    noc_data_cols = ["noc_brand_name", "noc_company", "noc_date", "noc_submission_type"]
+    noc_data_cols = ["noc_date", "noc_submission_type"]
 
     noc_present = False
     for col in noc_data_cols:
@@ -228,7 +228,7 @@ _KNOWN_SHAPES: frozenset[str] = frozenset({
     "diamond", "shield", "kidney", "bean",
 })
 
-_NOC_DATA_COLS = ["noc_brand_name", "noc_company", "noc_date", "noc_submission_type"]
+_NOC_DATA_COLS = ["noc_date", "noc_submission_type"]
 _NOC_COLS = _NOC_DATA_COLS + ["noc_therapeutic_class"]
 
 # Patterns that must NOT appear in excipient fields

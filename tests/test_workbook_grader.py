@@ -323,8 +323,6 @@ class TestCheckShape:
 class TestCheckNocConsistency:
     def _full_noc(self, sub_type: str = "NDS") -> dict:
         return {
-            "noc_brand_name":        "PIQRAY",
-            "noc_company":           "Novartis",
             "noc_date":              "2020-01-01",
             "noc_submission_type":   sub_type,
             "noc_therapeutic_class": "Antineoplastic",
@@ -332,8 +330,7 @@ class TestCheckNocConsistency:
 
     def _no_noc(self) -> dict:
         return {c: NO_NOC_RECORD for c in (
-            "noc_brand_name", "noc_company", "noc_date",
-            "noc_submission_type", "noc_therapeutic_class",
+            "noc_date", "noc_submission_type", "noc_therapeutic_class",
         )}
 
     def test_all_real_nds_ok(self):
@@ -345,19 +342,17 @@ class TestCheckNocConsistency:
     def test_all_no_noc_record_ok(self):
         assert check_noc_consistency("12345678", self._no_noc()) == []
 
-    def test_blank_company_not_inconsistent_error(self):
+    def test_blank_date_not_inconsistent_error(self):
         # Blank string ≠ "No NOC record" sentinel, so NOT an ERROR
         row = self._full_noc()
-        row["noc_company"] = ""
+        row["noc_date"] = ""
         findings = check_noc_consistency("12345678", row)
         assert not any(f.check_id == "F1_NOC_INCONSISTENT" for f in findings)
 
     def test_mixed_no_noc_and_real_is_error(self):
-        # brand + company real, date + sub_type = "No NOC record" → ERROR
+        # noc_date real but noc_submission_type = "No NOC record" → ERROR
         row = {
-            "noc_brand_name":        "PIQRAY",
-            "noc_company":           "Novartis",
-            "noc_date":              NO_NOC_RECORD,
+            "noc_date":              "2020-01-01",
             "noc_submission_type":   NO_NOC_RECORD,
             "noc_therapeutic_class": NOT_IN_PM,
         }
@@ -450,8 +445,6 @@ def _stage_df(**col_vals) -> pd.DataFrame:
         "din":                 "12345678",
         "active_ingredient":   "",
         "excipients_core":     "",
-        "noc_brand_name":      NO_NOC_RECORD,
-        "noc_company":         NO_NOC_RECORD,
         "noc_date":            NO_NOC_RECORD,
         "noc_submission_type": NO_NOC_RECORD,
         "patent_count":        "0",
@@ -465,7 +458,6 @@ class TestDetectStages:
     def test_patents_only_labeling_false(self):
         df = _stage_df(
             patent_1_number="2709025",
-            noc_brand_name=NO_NOC_RECORD,
             active_ingredient="",
             excipients_core="",
         )
@@ -478,8 +470,6 @@ class TestDetectStages:
         df = _stage_df(
             active_ingredient="alpelisib",
             excipients_core="microcrystalline cellulose",
-            noc_brand_name="PIQRAY",
-            noc_company="Novartis",
             noc_date="2020-01-01",
             noc_submission_type="NDS",
             patent_1_number="2709025",
@@ -493,8 +483,6 @@ class TestDetectStages:
 
     def test_all_no_noc_record_noc_false(self):
         df = _stage_df(
-            noc_brand_name=NO_NOC_RECORD,
-            noc_company=NO_NOC_RECORD,
             noc_date=NO_NOC_RECORD,
             noc_submission_type=NO_NOC_RECORD,
         )
@@ -525,8 +513,6 @@ class TestFamily1StageAware:
             "preservatives": NOT_IN_PM,
             "colour": NOT_IN_PM,
             "shape": NOT_IN_PM,
-            "noc_brand_name": NO_NOC_RECORD,
-            "noc_company": NO_NOC_RECORD,
             "noc_date": NO_NOC_RECORD,
             "noc_submission_type": NO_NOC_RECORD,
             "noc_therapeutic_class": NO_NOC_RECORD,
@@ -553,8 +539,6 @@ class TestFamily1StageAware:
         # Even with LABELING=False, patent count mismatch should still fire
         df = pd.DataFrame([{
             "din": "12345678",
-            "noc_brand_name": NO_NOC_RECORD,
-            "noc_company": NO_NOC_RECORD,
             "noc_date": NO_NOC_RECORD,
             "noc_submission_type": NO_NOC_RECORD,
             "noc_therapeutic_class": NO_NOC_RECORD,
@@ -583,8 +567,6 @@ def _make_df(**kwargs) -> pd.DataFrame:
         "shape": NOT_IN_PM,
         "size_mm": NOT_IN_PM,
         "weight": NOT_IN_PM,
-        "noc_brand_name": NO_NOC_RECORD,
-        "noc_company": NO_NOC_RECORD,
         "noc_date": NO_NOC_RECORD,
         "noc_submission_type": NO_NOC_RECORD,
         "noc_therapeutic_class": NO_NOC_RECORD,

@@ -441,7 +441,10 @@ async def load_patent_zip() -> dict[str, dict[str, Optional[str]]]:
         logger.warning("Patent.zip download failed: %s", exc)
         return {}
 
-    return _parse_patent_zip(zip_bytes)
+    result = _parse_patent_zip(zip_bytes)
+    if result:
+        cache_set("patent_zip", "bulk_v2", result, ttl=60 * 60 * 24)
+    return result
 
 
 def _parse_zip_date(raw: Optional[str]) -> Optional[str]:
@@ -491,7 +494,6 @@ def _parse_patent_zip(zip_bytes: bytes) -> dict[str, dict[str, Optional[str]]]:
         logger.warning("Patent.zip parse failed: %s", exc)
         return {}
 
-    cache_set("patent_zip", "bulk_v2", result, ttl=60 * 60 * 24)
     return result
 
 

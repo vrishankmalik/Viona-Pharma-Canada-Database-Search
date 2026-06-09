@@ -19,13 +19,15 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.config import ENABLE_OCR, SOURCE_TIMEOUT
+from app.config import ENABLE_OCR, LABELING_STORE_TTL, SOURCE_TIMEOUT
 from app.consistency import check_cross_source_consistency
 from app.enrichment.data_protection import fetch_data_protection_table
 from app.enrichment.labeling import enrich_labeling, enrich_labeling_batch_fast
 from app.enrichment.patents import enrich_patents
-from app.enrichment.store import get_labeling_for_din
-from app.enrichment.workbook import _is_excluded_din, build_workbook
+from app.enrichment.store import is_labeling_stale
+import pandas as pd
+
+from app.enrichment.workbook import _is_excluded_din, build_workbook_with_data
 from app.jobs import JobState, emit
 from app.models import SearchMetadata, SearchResponse, SourceResult
 from app.normalize import normalize_query
@@ -204,7 +206,7 @@ async def run_export_job(
                     continue
                 try:
                     din_key = r.din.strip()  # type: ignore[union-attr]
-                    if get_labeling_for_din(din_key) is None:
+                    if is_labeling_stale(din_key, LABELING_STORE_TTL):
                         din_map[din_key] = (int(drug_code_raw), r.strength)
                 except (ValueError, TypeError):
                     pass
@@ -289,10 +291,21 @@ async def run_export_job(
             "log": "Assembling two-tab workbook…",
         })
 
-        xlsx_bytes = build_workbook(
+        xlsx_bytes, sheet1_df, sheet2_df = build_workbook_with_data(
             result,
             source_errors=error_sources if allow_partial and error_sources else None,
             dp_table=dp_table,
+        )
+
+        # Snapshot the DataFrames so the dashboard consumes the EXACT same data
+        # as the XLSX — no re-scraping, no parallel computation path.
+        job.sheet1_columns = list(sheet1_df.columns)
+        job.sheet1_records = (
+            sheet1_df.where(pd.notna(sheet1_df), None).to_dict("records")
+        )
+        job.sheet2_columns = list(sheet2_df.columns)
+        job.sheet2_records = (
+            sheet2_df.where(pd.notna(sheet2_df), None).to_dict("records")
         )
 
         # Write to temp file — result endpoint streams it from disk

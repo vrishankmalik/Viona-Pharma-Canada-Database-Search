@@ -1,0 +1,15 @@
+family,check_id,din,field,severity,workbook_value,reason
+1,F1_NOC_INCONSISTENT,02497042,noc_*,ERROR,"real=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type']","NOC fields inconsistent: populated=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type'] absent=['noc_therapeutic_class']"
+1,F1_NOC_INCONSISTENT,02497069,noc_*,ERROR,"real=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type']","NOC fields inconsistent: populated=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type'] absent=['noc_therapeutic_class']"
+1,F1_NOC_INCONSISTENT,02497077,noc_*,ERROR,"real=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type']","NOC fields inconsistent: populated=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type'] absent=['noc_therapeutic_class']"
+1,F1_NOC_INCONSISTENT,02497085,noc_*,ERROR,"real=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type']","NOC fields inconsistent: populated=['noc_brand_name', 'noc_company', 'noc_date', 'noc_submission_type'] absent=['noc_therapeutic_class']"
+2,F2_AI_BLANK,02497042,active_ingredient,ERROR,,active_ingredient is blank/sentinel for a DIN row (Tier-A field)
+2,F2_AI_BLANK,02497069,active_ingredient,ERROR,,active_ingredient is blank/sentinel for a DIN row (Tier-A field)
+2,F2_AI_BLANK,02497077,active_ingredient,ERROR,,active_ingredient is blank/sentinel for a DIN row (Tier-A field)
+2,F2_AI_BLANK,02497085,active_ingredient,ERROR,,active_ingredient is blank/sentinel for a DIN row (Tier-A field)
+3,F3_PATENT_SKIPPED,02497042,patent_number,SKIPPED,2734819,CPD domain unreachable
+3,F3_PATENT_SKIPPED,02497069,patent_number,SKIPPED,2734819,CPD domain unreachable
+3,F3_PATENT_SKIPPED,02497077,patent_number,SKIPPED,2734819,CPD domain unreachable
+4,F4_DET_NO_PDF,02497085,determinism,SKIPPED,,No PDF available for re-extraction (drug_code=98694)
+4,F4_OCR_PASS,83088,ocr_liveness,WARN,"175432 chars, section=§6, ocr_used=False",drug_code=83088: 175432 chars extracted; section=§6; ocr_used=False
+4,F4_OCR_NO_PDF,48982,ocr_liveness,WARN,,drug_code=48982: no PDF link on DPD info page

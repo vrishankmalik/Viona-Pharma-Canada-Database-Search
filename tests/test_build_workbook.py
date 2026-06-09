@@ -202,18 +202,20 @@ def test_build_workbook_returns_xlsx():
 
 
 def test_build_workbook_sheet1_has_patent_columns(tmp_path):
+    """patent_count is always present; patent_N groups appear only when data exists."""
     import app.enrichment.store as store_mod
     store_mod.reset_for_testing(str(tmp_path / "enrich.db"))
     # Add a patent so the patent_1_* group isn't dropped by the all-empty cleanup
+    # patent_count is in _NEVER_DROP so it always survives pruning
     store_mod.upsert_patent("02498014", "2709025", "2008-12-10", "2014-08-26", "2028-12-10")
 
     from app.enrichment.workbook import build_sheet1
 
     response = _make_response(dpd_records=[_dpd("02498014")])
     df = build_sheet1(response)
-    # Wide patent columns must be present (patent data was added)
     assert "patent_count" in df.columns, "patent_count missing"
-    assert "patent_1_number" in df.columns, "patent_1_number missing"
+    # With one seeded patent, patent_1 group is 100% filled — must be kept
+    assert "patent_1_number" in df.columns, "patent_1_number missing (1 patent seeded)"
     assert "patent_1_filing_date" in df.columns, "patent_1_filing_date missing"
     assert "patent_1_expiry_date" in df.columns, "patent_1_expiry_date missing"
     # Old merged-string columns must be absent
@@ -222,16 +224,19 @@ def test_build_workbook_sheet1_has_patent_columns(tmp_path):
 
 
 def test_build_workbook_sheet1_has_labeling_columns(tmp_path):
-    import time
+    """Labeling columns appear when labeling data is seeded for the DIN."""
     import app.enrichment.store as store_mod
     store_mod.reset_for_testing(str(tmp_path / "enrich.db"))
-    # Add minimal labeling data so labeling columns are not dropped by the
-    # all-empty cleanup (Change 2).  These sentinels are real values ("Not in PM"
-    # / "No PM available"), so the columns must be kept.
+    # Minimal labeling data keeps labeling columns from being pruned.
     store_mod.upsert_labeling("02498014", {
-        "colour": "pink", "shape": "round", "ph": "Not stated",
-        "needs_ocr": 0, "has_unverified": 0, "drug_code": 99001,
-        "fetched_at": time.time(),
+        "active_ingredient": "alpelisib",
+        "colour": "Pink",
+        "shape": "Round",
+        "ph": "Not stated",
+        "needs_ocr": 0,
+        "has_unverified": 0,
+        "drug_code": 99001,
+        "fetched_at": 0,
     })
 
     from app.enrichment.workbook import build_sheet1
@@ -440,8 +445,7 @@ def test_no_noc_record_din_gets_sentinel():
     assert row_with_noc["noc_date"] == "2019-05-24"
 
     # Row without NOC match should have sentinel in every noc_* column
-    for col in ("noc_brand_name", "noc_company", "noc_date",
-                "noc_submission_type", "noc_therapeutic_class"):
+    for col in ("noc_date", "noc_submission_type", "noc_therapeutic_class"):
         assert row_no_noc[col] == "No NOC record", (
             f"Expected 'No NOC record' in column '{col}', got: {row_no_noc[col]!r}"
         )
@@ -598,3 +602,131 @@ def test_export_never_produces_old_sheet_names():
     assert set(wb.sheetnames) == {"DPD + NOC + Patents", "Generic Submissions"}, (
         f"Expected exactly the two new sheet names; got: {wb.sheetnames}"
     )
+
+
+# ── Test 9: threshold-based column pruning ────────────────────────────────────
+
+def test_sparse_patent_group_pruned():
+    """patent_7 group with 1/200 fill is dropped; patent_1 is the unconditional floor."""
+    import pandas as pd
+    from app.enrichment.workbook import _prune_sparse_columns
+
+    n = 200
+    # Build a frame with:
+    #   patent_1: only 1/200 filled (0.5%) — below threshold BUT must NEVER be dropped
+    #   patent_7: 1/200 filled (0.5%) — above patent_1, must be dropped as a tail group
+    # Also a real column at 50% fill, and a stray non-patent column at 0.5% fill.
+    data: dict[str, list] = {
+        "din": [f"{i:08d}" for i in range(n)],
+        "patent_count": [1] + [0] * (n - 1),
+        "patent_1_number": (["2709025"] + [None] * (n - 1)),
+        "patent_1_filing_date": (["2008-12-10"] + [None] * (n - 1)),
+        "patent_1_grant_date": (["2014-08-26"] + [None] * (n - 1)),
+        "patent_1_expiry_date": (["2028-12-10"] + [None] * (n - 1)),
+        "patent_7_number": (["3000001"] + [None] * (n - 1)),
+        "patent_7_filing_date": (["2020-01-01"] + [None] * (n - 1)),
+        "patent_7_grant_date": ([None] * n),
+        "patent_7_expiry_date": ([None] * n),
+        # A schema column at 50% fill — must survive (also in _NEVER_DROP_COLS)
+        "noc_date": (["2019-05-24"] * (n // 2) + [None] * (n // 2)),
+        # dp_6yr_no_file_date is a protected schema column — must survive even at low fill
+        "dp_6yr_no_file_date": ([None] * (n - 1) + ["2030-01-01"]),
+        # _schedule is a supplementary internal field — eligible for pruning
+        "_schedule": ([None] * (n - 1) + ["Rx"]),
+    }
+    df = pd.DataFrame(data)
+
+    pruned = _prune_sparse_columns(df, min_fill_rate=0.02)
+
+    # patent_7 group must be gone entirely (tail group, N > 1, below threshold)
+    for col in ("patent_7_number", "patent_7_filing_date",
+                "patent_7_grant_date", "patent_7_expiry_date"):
+        assert col not in pruned.columns, f"{col} should have been pruned"
+
+    # patent_1 group must ALWAYS survive — it is the unconditional floor
+    # even at 0.5% fill (1/200 rows)
+    for col in ("patent_1_number", "patent_1_filing_date",
+                "patent_1_grant_date", "patent_1_expiry_date"):
+        assert col in pruned.columns, (
+            f"{col} must survive: patent_1 is the unconditional floor "
+            f"and must never be pruned by the fill-rate threshold"
+        )
+
+    # 50%-filled schema column must survive
+    assert "noc_date" in pruned.columns, "noc_date (50% fill) must not be pruned"
+
+    # dp_6yr_no_file_date is a protected schema column — must survive regardless of fill
+    assert "dp_6yr_no_file_date" in pruned.columns, (
+        "dp_6yr_no_file_date must never be pruned (protected schema column)"
+    )
+
+    # _schedule is supplementary — eligible for pruning at 0.5% fill
+    assert "_schedule" not in pruned.columns, (
+        "_schedule (1/200 fill) is a supplementary field and must be pruned"
+    )
+
+    # din and patent_count are never dropped
+    assert "din" in pruned.columns
+    assert "patent_count" in pruned.columns
+
+
+def test_patent_tail_prune_stops_at_dense_group():
+    """Pruning walks from highest N downward and stops at the first dense group.
+
+    If patent_5 through patent_9 are sparse but patent_4 is dense,
+    groups 5-9 are dropped and 1-4 are kept — even if 2 and 3 are sparse.
+    """
+    import pandas as pd
+    from app.enrichment.workbook import _prune_sparse_columns
+
+    n = 100
+    data: dict[str, list] = {
+        "din": [f"{i:08d}" for i in range(n)],
+        "patent_count": [4] * 30 + [0] * 70,
+        # Groups 1-4: well-filled (30% of rows)
+        **{f"patent_{g}_number": (["PAT"] * 30 + [None] * 70) for g in range(1, 5)},
+        **{f"patent_{g}_filing_date": (["2010-01-01"] * 30 + [None] * 70) for g in range(1, 5)},
+        **{f"patent_{g}_grant_date": (["2015-01-01"] * 30 + [None] * 70) for g in range(1, 5)},
+        **{f"patent_{g}_expiry_date": (["2030-01-01"] * 30 + [None] * 70) for g in range(1, 5)},
+        # Groups 5-7: sparse (1 row each)
+        **{f"patent_{g}_number": ([None] * (g - 1) + ["PAT"] + [None] * (n - g)) for g in range(5, 8)},
+        **{f"patent_{g}_filing_date": ([None] * n) for g in range(5, 8)},
+        **{f"patent_{g}_grant_date": ([None] * n) for g in range(5, 8)},
+        **{f"patent_{g}_expiry_date": ([None] * n) for g in range(5, 8)},
+    }
+    df = pd.DataFrame(data)
+    pruned = _prune_sparse_columns(df, min_fill_rate=0.02)
+
+    # Groups 5-7 must be dropped (sparse tail, N > 1)
+    for g in range(5, 8):
+        assert f"patent_{g}_number" not in pruned.columns, f"patent_{g} tail must be pruned"
+
+    # Groups 1-4 must survive (dense, pruning stopped before them)
+    for g in range(1, 5):
+        for suffix in ("number", "filing_date", "grant_date", "expiry_date"):
+            assert f"patent_{g}_{suffix}" in pruned.columns, (
+                f"patent_{g}_{suffix} must survive (pruning stopped at patent_4)"
+            )
+
+
+def test_sentinel_values_protect_column():
+    """Columns filled only with sentinels like 'No NOC record' must NOT be pruned."""
+    import pandas as pd
+    from app.enrichment.workbook import _prune_sparse_columns
+
+    n = 100
+    data: dict[str, list] = {
+        "din": [f"{i:08d}" for i in range(n)],
+        "patent_count": [0] * n,
+        # Every row has "No NOC record" — this is a sentinel, not empty, so must survive
+        "noc_submission_type": ["No NOC record"] * n,
+        # Column with real value in 60% of rows
+        "brand_name": (["PIQRAY"] * 60 + [None] * 40),
+    }
+    df = pd.DataFrame(data)
+    pruned = _prune_sparse_columns(df, min_fill_rate=0.02)
+
+    assert "noc_submission_type" in pruned.columns, (
+        "'No NOC record' sentinel must count as non-empty and protect the column"
+    )
+    assert "brand_name" in pruned.columns

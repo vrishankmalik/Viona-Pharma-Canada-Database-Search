@@ -33,6 +33,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from app.config import WORKBOOK_MIN_FILL_RATE
+
 logger = logging.getLogger(__name__)
 
 from app.enrichment.data_protection import (
@@ -44,6 +46,141 @@ from app.models import DrugRecord, SearchResponse
 # DIN values that should be excluded from Sheet 1
 _EXCLUDED_DIN_VALUES = {"", "not applicable", "n/a", "na", "none"}
 
+# Columns that are NEVER pruned regardless of fill rate.
+# This covers every named output column in the Sheet 1 schema.  Only internal
+# supplementary DPD fields (_schedule, _last_update) and high-numbered patent tail
+# groups (N ≥ 2) are eligible for threshold pruning.
+_NEVER_DROP_COLS = frozenset({
+    # Identity / provenance
+    "din", "_drug_code", "needs_ocr",
+    # DPD core
+    "brand_name", "company", "ingredient", "strength",
+    "dosage_form", "route", "status",
+    # Patent summary (patent_1_* is protected separately as the floor group)
+    "patent_count",
+    # NOC (also guarded by "No NOC record" sentinels, belt-and-suspenders)
+    "noc_date", "noc_submission_type", "noc_therapeutic_class",
+    # Labeling
+    "active_ingredient", "excipients_core", "excipients_coating",
+    "preservatives", "pack_size", "pack_style",
+    "colour", "shape", "size_mm", "weight", "ph",
+    # Data protection (always present even when no record matches)
+    "dp_6yr_no_file_date", "pediatric_extension", "data_protection_ends",
+})
+
+# Canonical Sheet 1 column order.  Patent N_* columns are inserted between the
+# pre-patent and post-patent groups at assembly time (count varies per dataset).
+_SHEET1_PRE_PATENT_COLS = (
+    "din", "ingredient", "brand_name", "company", "strength", "dosage_form",
+    "route", "status", "_drug_code", "_schedule", "_last_update",
+    "noc_date", "noc_submission_type", "noc_therapeutic_class",
+    "patent_count",
+)
+_SHEET1_POST_PATENT_COLS = (
+    "active_ingredient", "excipients_core", "excipients_coating",
+    "preservatives", "pack_size", "pack_style", "colour", "shape", "size_mm",
+    "weight", "ph", "needs_ocr",
+    "dp_6yr_no_file_date", "pediatric_extension", "data_protection_ends",
+)
+
+# Regex to identify patent_N group columns (the four columns per patent slot).
+_PATENT_GROUP_RE = re.compile(
+    r"^patent_(\d+)_(number|filing_date|grant_date|expiry_date)$"
+)
+
+
+def _is_empty_for_fill(v: Any) -> bool:
+    """True if v counts as empty for fill-rate purposes.
+
+    None, NaN, "", and whitespace-only strings are empty.
+    Sentinel strings ("No NOC record", "Not in PM", "No", …) are NOT empty —
+    they represent a real, meaningful absence and protect the column.
+    """
+    if v is None:
+        return True
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip() == ""
+
+
+def _col_fill_rate(series: "pd.Series[Any]", n_rows: int) -> float:
+    return int(series.apply(lambda v: not _is_empty_for_fill(v)).sum()) / n_rows
+
+
+def _prune_sparse_columns(
+    df: pd.DataFrame,
+    min_fill_rate: float = WORKBOOK_MIN_FILL_RATE,
+) -> pd.DataFrame:
+    """Drop Sheet 1 columns whose non-empty fill rate is at or below min_fill_rate.
+
+    Patent groups (patent_N_number/filing/grant/expiry) are evaluated and
+    dropped together so the wide layout stays aligned.  The report is printed
+    to stdout so it appears in CLI and server logs.
+    """
+    if df.empty:
+        return df
+
+    n_rows = len(df)
+    cols_before = len(df.columns)
+    cols_to_drop: list[str] = []
+    report_lines: list[str] = []
+
+    # ── Collect patent groups ────────────────────────────────────────────────
+    patent_groups: dict[int, list[str]] = {}
+    for col in df.columns:
+        m = _PATENT_GROUP_RE.match(col)
+        if m:
+            patent_groups.setdefault(int(m.group(1)), []).append(col)
+    patent_all_cols: set[str] = {c for cols in patent_groups.values() for c in cols}
+
+    # Prune patent tail groups: walk from the HIGHEST group downward, dropping
+    # sparse groups until we reach a dense group (or hit the patent_1 floor).
+    # patent_1 is NEVER pruned by the threshold — it is the minimum patent slot
+    # and its dates represent real data for any DIN that has a patent.
+    if patent_groups:
+        for n in sorted(patent_groups, reverse=True):
+            if n == 1:
+                break  # patent_1 is the unconditional floor — stop here
+            num_col = f"patent_{n}_number"
+            if num_col not in df.columns:
+                continue
+            fr = _col_fill_rate(df[num_col], n_rows)
+            if fr <= min_fill_rate:
+                n_filled = round(fr * n_rows)
+                cols_to_drop.extend(patent_groups[n])
+                report_lines.append(
+                    f"  patent_{n} group (4 cols): {n_filled}/{n_rows} = {fr:.1%} fill → dropped"
+                )
+            else:
+                break  # Dense group found — keep this one and everything below it
+
+    # ── Non-patent columns ───────────────────────────────────────────────────
+    for col in df.columns:
+        if col in patent_all_cols or col in _NEVER_DROP_COLS:
+            continue
+        fr = _col_fill_rate(df[col], n_rows)
+        if fr <= min_fill_rate:
+            n_filled = round(fr * n_rows)
+            cols_to_drop.append(col)
+            report_lines.append(
+                f"  {col}: {n_filled}/{n_rows} = {fr:.1%} fill → dropped"
+            )
+
+    cols_after = cols_before - len(cols_to_drop)
+    print(f"\n=== Workbook column cleanup (min_fill_rate={min_fill_rate:.1%}) ===")
+    if report_lines:
+        for line in report_lines:
+            print(line)
+    else:
+        print("  (no columns dropped)")
+    print(f"  Columns: {cols_before} → {cols_after}")
+    print("=" * 52)
+
+    return df.drop(columns=cols_to_drop)
+
 # Supplement submission types to drop from Sheet 1 (SNDS / SANDS)
 _SUPPLEMENT_TYPE_RE = re.compile(
     r"\bSNDS\b|\bSANDS\b|Supplement\s+to\s+(a\s+New|an\s+Abbreviated)",
@@ -52,8 +189,6 @@ _SUPPLEMENT_TYPE_RE = re.compile(
 
 # Sentinel dict for DPD DINs that have no matching NOC record
 _NO_NOC_RECORD = {
-    "noc_brand_name": "No NOC record",
-    "noc_company": "No NOC record",
     "noc_date": "No NOC record",
     "noc_submission_type": "No NOC record",
     "noc_therapeutic_class": "No NOC record",
@@ -110,8 +245,6 @@ def _collect_noc_rows(records: list[DrugRecord]) -> dict[str, dict[str, Any]]:
             continue  # drop SNDS / SANDS rows
         din = r.din.strip()  # type: ignore[union-attr]
         out[din] = {
-            "noc_brand_name": r.brand_name,
-            "noc_company": r.company,
             "noc_date": r.source_specific.get("noc_date"),
             "noc_submission_type": sub_type or None,
             "noc_therapeutic_class": r.source_specific.get("therapeutic_class"),
@@ -279,9 +412,27 @@ def build_sheet1(
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    cols = ["din"] + [c for c in df.columns if c != "din"]
-    df = df[cols].sort_values("din", kind="stable").reset_index(drop=True)
-    return _drop_empty_sheet1_cols(df)
+
+    # Apply the canonical column order defined by _SHEET1_PRE/POST_PATENT_COLS.
+    # Patent_N_* columns are dynamic (count varies), so they are inserted between
+    # the two fixed groups, sorted by patent slot number.
+    present = set(df.columns)
+    patent_cols = sorted(
+        (c for c in present if _PATENT_GROUP_RE.match(c)),
+        key=lambda c: (int(_PATENT_GROUP_RE.match(c).group(1)),  # type: ignore[union-attr]
+                       ("number", "filing_date", "grant_date", "expiry_date").index(
+                           _PATENT_GROUP_RE.match(c).group(2))),  # type: ignore[union-attr]
+    )
+    ordered = (
+        [c for c in _SHEET1_PRE_PATENT_COLS if c in present]
+        + patent_cols
+        + [c for c in _SHEET1_POST_PATENT_COLS if c in present]
+    )
+    # Append any remaining columns not yet listed (future-proofing)
+    ordered += [c for c in df.columns if c not in set(ordered)]
+
+    df = df[ordered].sort_values("din", kind="stable").reset_index(drop=True)
+    return _prune_sparse_columns(df)
 
 
 # ── Sheet 2 helpers ───────────────────────────────────────────────────────────
@@ -381,6 +532,36 @@ def _build_status_sheet(
     _style_sheet(writer.sheets[sheet_name], df)
 
 
+def build_workbook_with_data(
+    response: SearchResponse,
+    source_errors: Optional[dict[str, Optional[str]]] = None,
+    dp_table: Optional[list[dict]] = None,
+) -> "tuple[bytes, pd.DataFrame, pd.DataFrame]":
+    """Assemble the enriched workbook; also return the Sheet 1 and Sheet 2 DataFrames.
+
+    The DataFrames are the authoritative in-memory representation — identical to
+    what is written to the XLSX.  Callers that need both (e.g. the dashboard) should
+    use this function rather than calling build_workbook() and build_sheet1() separately
+    to avoid double-computing the sheets.
+
+    Returns (xlsx_bytes, sheet1_df, sheet2_df).
+    """
+    buf = io.BytesIO()
+    sheet1 = build_sheet1(response, dp_table=dp_table)
+    sheet2 = build_sheet2(response)
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        sheet1.to_excel(writer, sheet_name="DPD + NOC + Patents", index=False)
+        _style_sheet(writer.sheets["DPD + NOC + Patents"], sheet1)
+
+        sheet2.to_excel(writer, sheet_name="Generic Submissions", index=False)
+        _style_sheet(writer.sheets["Generic Submissions"], sheet2)
+
+        if source_errors is not None:
+            _build_status_sheet(writer, response, source_errors)
+
+    return buf.getvalue(), sheet1, sheet2
+
+
 def build_workbook(
     response: SearchResponse,
     source_errors: Optional[dict[str, Optional[str]]] = None,
@@ -393,20 +574,7 @@ def build_workbook(
     dp_table: pre-fetched active data protection register rows (from
     fetch_data_protection_table()); None means the three dp_* columns are blank.
     """
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        sheet1 = build_sheet1(response, dp_table=dp_table)
-        sheet1.to_excel(writer, sheet_name="DPD + NOC + Patents", index=False)
-        _style_sheet(writer.sheets["DPD + NOC + Patents"], sheet1)
-
-        sheet2 = build_sheet2(response)
-        sheet2.to_excel(writer, sheet_name="Generic Submissions", index=False)
-        _style_sheet(writer.sheets["Generic Submissions"], sheet2)
-
-        if source_errors is not None:
-            _build_status_sheet(writer, response, source_errors)
-
-    return buf.getvalue()
+    return build_workbook_with_data(response, source_errors, dp_table)[0]
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

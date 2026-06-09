@@ -660,13 +660,26 @@ def _normalize_strength(raw: str) -> str:
 
 # ── Stage 3: Ollama extraction ────────────────────────────────────────────────
 
+_ollama_cache: dict = {"available": None, "checked_at": 0.0}
+_OLLAMA_CHECK_TTL = 30.0  # seconds — reuse result within one export run
+
+
 async def _is_ollama_available() -> bool:
+    now = time.time()
+    if (
+        _ollama_cache["available"] is not None
+        and now - _ollama_cache["checked_at"] < _OLLAMA_CHECK_TTL
+    ):
+        return _ollama_cache["available"]  # type: ignore[return-value]
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=3.0)
-        return r.status_code == 200
+        result = r.status_code == 200
     except Exception:
-        return False
+        result = False
+    _ollama_cache["available"] = result
+    _ollama_cache["checked_at"] = now
+    return result
 
 
 async def _query_ollama(section_text: str, page_num: int, field_group: str) -> dict:
@@ -1152,7 +1165,7 @@ async def parse_labeling_fields_async(
         use_ollama = enable_llm and await _is_ollama_available()
 
     if use_ollama:
-        # --- Ollama path ---
+        # --- Ollama path (all three field groups queried in parallel) ---
         excip_section_text = s6_text
         nm_match = re.search(
             r"(?:Non-?[Mm]edicinal|[Ii]nactive|[Ee]xcipient)[^\n]{0,60}\n(.{50,}?)(?=\n\n|\Z)",
@@ -1161,20 +1174,26 @@ async def parse_labeling_fields_async(
         if nm_match:
             excip_section_text = nm_match.group(0)
 
-        ollama_a = await _query_ollama_cached(excip_section_text, s6_page or 1, "excipients")
+        appearance_text = (
+            f"Product: {_normalize_strength(din_strength)}\n\n{desc_text}"
+            if din_strength and desc_text
+            else (desc_text or s6_text)
+        )
+
+        async def _ph_query() -> dict:
+            if s13_text:
+                return await _query_ollama(s13_text, s13_page or 1, "ph")
+            return {}
+
+        ollama_a, ollama_b, ollama_c = await asyncio.gather(
+            _query_ollama(excip_section_text, s6_page or 1, "excipients"),
+            _query_ollama(appearance_text, desc_page or 1, "appearance"),
+            _ph_query(),
+        )
+
         _apply_ollama_result(row, ollama_a, ["excipients_core", "excipients_coating", "preservatives"], s6_page)
-
-        if din_strength and desc_text:
-            norm = _normalize_strength(din_strength)
-            ollama_b = await _query_ollama_cached(
-                f"Product: {norm}\n\n{desc_text}", desc_page or 1, "appearance"
-            )
-        else:
-            ollama_b = await _query_ollama_cached(desc_text or s6_text, desc_page or 1, "appearance")
         _apply_ollama_result(row, ollama_b, ["colour", "shape", "size_mm", "weight"], desc_page)
-
         if s13_text:
-            ollama_c = await _query_ollama_cached(s13_text, s13_page or 1, "ph")
             _apply_ollama_result(row, ollama_c, ["ph"], s13_page)
         else:
             row["ph"] = NOT_IN_PM

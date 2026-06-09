@@ -8,6 +8,12 @@ NORMALIZE_SALT_FORMS = bool(int(os.getenv("NORMALIZE_SALT_FORMS", "0")))
 # LLM
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+# LLM synonym expansion for ingredient searches — off by default.
+# When off, only the static synonym map (_STATIC_SYNONYMS) is used, which is safe.
+# LLM expansion is disabled by default because language models hallucinate plausible
+# but incorrect drug names as synonyms (e.g. apremilast → abrocitinib), pulling
+# foreign-ingredient products into the result set.
+ENABLE_LLM_SYNONYMS = bool(int(os.getenv("ENABLE_LLM_SYNONYMS", "0")))
 
 # Concurrency / timeouts
 DPD_SEMAPHORE = int(os.getenv("DPD_SEMAPHORE", "10"))
@@ -40,3 +46,13 @@ ENABLE_OCR = bool(int(os.getenv("ENABLE_OCR", "1")))
 
 # Concurrent PDF downloads + labeling enrichments in the async export job
 LABELING_SEMAPHORE = int(os.getenv("LABELING_SEMAPHORE", "8"))
+
+# Enrichment store TTL: labeling records older than this are re-fetched on each export.
+# HTTP caches (PDFs, DPD API) are unaffected — only the stored analysis result is refreshed.
+LABELING_STORE_TTL = int(os.getenv("LABELING_STORE_TTL", str(2 * 60 * 60)))  # 2 hours
+
+# Workbook column pruning: drop Sheet 1 columns whose non-empty fill rate is at or below
+# this threshold.  0.0 = strict (only truly-all-empty columns dropped).
+# 0.02 = drop any column filled in ≤2% of rows — removes single-stray-value patent groups
+# (1/223 ≈ 0.45%) while preserving columns with meaningful coverage (≥5 rows ≈ 2.2%).
+WORKBOOK_MIN_FILL_RATE = float(os.getenv("WORKBOOK_MIN_FILL_RATE", "0.02"))

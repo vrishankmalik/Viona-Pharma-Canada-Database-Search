@@ -19,6 +19,13 @@ class JobState:
     result_path: Optional[str] = None
     error: Optional[str] = None
     created_at: float = dataclasses.field(default_factory=time.time)
+    # Snapshot of the final Sheet 1 and Sheet 2 DataFrames (identical to what
+    # was written to the XLSX).  These are the single source of truth for the
+    # dashboard view — the dashboard must read from here, never re-scrape.
+    sheet1_columns: list[str] = dataclasses.field(default_factory=list)
+    sheet1_records: list[dict] = dataclasses.field(default_factory=list)
+    sheet2_columns: list[str] = dataclasses.field(default_factory=list)
+    sheet2_records: list[dict] = dataclasses.field(default_factory=list)
 
 
 _jobs: dict[str, JobState] = {}

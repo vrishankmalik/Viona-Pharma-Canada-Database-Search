@@ -12,7 +12,7 @@ from typing import Optional
 import httpx
 
 from app.cache import cache_get, cache_set
-from app.config import CACHE_TTL, OLLAMA_BASE_URL, OLLAMA_MODEL
+from app.config import CACHE_TTL, ENABLE_LLM_SYNONYMS, OLLAMA_BASE_URL, OLLAMA_MODEL
 
 # Static synonym map — canonical form → list of synonyms (and vice versa)
 _STATIC_SYNONYMS: dict[str, list[str]] = {
@@ -143,8 +143,11 @@ async def normalize_ingredient(term: str) -> tuple[str, list[str]]:
     # 1. Check static map
     static = _static_synonyms(key)
 
-    # 2. Try Ollama (fire and forget — if it fails, use static only)
-    ollama_terms = await _ollama_synonyms(term)
+    # 2. Try Ollama only when explicitly enabled.
+    # Disabled by default: LLMs hallucinate plausible-but-wrong drug names as synonyms
+    # (e.g. "apremilast" for "abrocitinib"), which pulls foreign-ingredient products
+    # into the result set. The static map handles all well-known synonyms safely.
+    ollama_terms = await _ollama_synonyms(term) if ENABLE_LLM_SYNONYMS else []
 
     # Combine and deduplicate
     all_extras = list({t.lower() for t in (static + ollama_terms)} - {key})

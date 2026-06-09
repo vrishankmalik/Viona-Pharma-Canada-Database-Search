@@ -182,6 +182,16 @@ def get_labeling_for_din(din: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def is_labeling_stale(din: str, ttl: float) -> bool:
+    """Return True if the labeling record is absent or was fetched more than ttl seconds ago."""
+    row = get_conn().execute(
+        "SELECT fetched_at FROM labeling WHERE din = ?", (din,)
+    ).fetchone()
+    if row is None:
+        return True
+    return (time.time() - row["fetched_at"]) > ttl
+
+
 def reset_for_testing(db_path: Optional[str] = None) -> None:
     """Replace the module-level connection with a fresh in-memory DB (tests only)."""
     global _conn, _DB_PATH
