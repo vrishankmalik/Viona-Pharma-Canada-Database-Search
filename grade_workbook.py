@@ -51,7 +51,6 @@ NO_PM_AVAILABLE    = "No PM available"
 NEEDS_OCR          = "needs OCR / manual check"
 PH_SOLUBILITY_ONLY = "Not stated (pH-dependent solubility only)"
 NO_NOC_RECORD      = "No NOC record"
-NA_UNCOATED        = "N/A (uncoated)"
 
 _SENTINEL_LOWER = frozenset({
     "", "not in pm", "no pm available", "needs ocr / manual check",
@@ -97,8 +96,8 @@ def detect_stages(df: pd.DataFrame) -> dict[str, bool]:
         return False
 
     labeling_cols = [
-        "active_ingredient", "excipients_core", "excipients_coating",
-        "preservatives", "ph", "colour", "shape", "size_mm", "weight",
+        "active_ingredient", "nonmedicinal_ingredients",
+        "ph", "colour", "shape", "size_mm", "weight",
     ]
     patent_cols = [c for c in cols if re.match(r"patent_\d+_number$", c)]
     noc_data_cols = ["noc_date", "noc_submission_type"]
@@ -228,16 +227,9 @@ _KNOWN_SHAPES: frozenset[str] = frozenset({
     "diamond", "shield", "kidney", "bean",
 })
 
-_NOC_DATA_COLS = ["noc_date", "noc_submission_type"]
-_NOC_COLS = _NOC_DATA_COLS + ["noc_therapeutic_class"]
+_NOC_DATA_COLS = ["noc_date", "noc_submission_type", "submission_class"]
+_NOC_COLS = _NOC_DATA_COLS + ["reason_for_supplement", "noc_therapeutic_class"]
 
-# Patterns that must NOT appear in excipient fields
-_EXCIPIENT_POISON_RE = re.compile(
-    r"debossed|[Aa]dministration\s+[Ff]orm|[Ff]orm\s*/\s*[Ss]trength|"
-    r"[Aa]dministration\s+[Ss]trength|tablets?\s+with\s+['\"]|"
-    r"[Ss]trength\s+and\s+[Dd]osage|[Dd]osage\s+[Ff]orm",
-    re.IGNORECASE,
-)
 _HEADING_FRAG_RE   = re.compile(r":\s*$")
 _PACK_STYLE_HDR_RE = re.compile(
     r"the following dosage strengths|dosage strengths|^\s*dosage\s+form",
@@ -264,17 +256,17 @@ class Finding:
 
 # ─── Family 1: Invariants ─────────────────────────────────────────────────────
 
-def check_excipient_field(din: str, field: str, val: Any) -> list[Finding]:
+def check_nonmedicinal_ingredients(din: str, val: Any) -> list[Finding]:
     if _is_sentinel(val):
         return []
     s = str(val).strip()
     out: list[Finding] = []
-    if _EXCIPIENT_POISON_RE.search(s):
-        out.append(Finding("F1_EXCIPIENT_POISON", din, field, "ERROR", s[:120],
-                           "Excipient field contains dosage/appearance/heading wording", 1))
     if _HEADING_FRAG_RE.search(s):
-        out.append(Finding("F1_EXCIPIENT_HEADING_FRAG", din, field, "ERROR", s[:120],
-                           "Excipient field ends in ':' — heading fragment leaked in", 1))
+        out.append(Finding("F1_NM_HEADING_FRAG", din, "nonmedicinal_ingredients", "ERROR",
+                           s[:120], "nonmedicinal_ingredients ends in ':' — heading fragment leaked in", 1))
+    if len(s) < 5:
+        out.append(Finding("F1_NM_TOO_SHORT", din, "nonmedicinal_ingredients", "WARN",
+                           s, "nonmedicinal_ingredients value is suspiciously short", 1))
     return out
 
 
@@ -340,15 +332,6 @@ def check_ph(din: str, val: Any) -> list[Finding]:
     return out
 
 
-def check_preservatives(din: str, val: Any) -> list[Finding]:
-    if _is_sentinel(val):
-        return []
-    s = str(val).strip()
-    if s not in ("Y", "N"):
-        return [Finding("F1_PRESERVATIVES_VALUE", din, "preservatives", "ERROR", s[:80],
-                        "preservatives must be 'Y', 'N', or a sentinel — got something else", 1)]
-    return []
-
 
 def check_colour(din: str, val: Any) -> list[Finding]:
     """Each comma/slash-separated part must contain at least one known colour word."""
@@ -378,8 +361,13 @@ def check_noc_consistency(din: str, row: dict) -> list[Finding]:
     """
     ERROR: some noc_* data fields have real values while others say 'No NOC record'
            (mixed sentinel + real value in the same row).
-    INFO:  noc_therapeutic_class absent while all four core NOC fields are populated
+    INFO:  noc_therapeutic_class absent while all core NOC fields are populated
            (expected — NOC source often omits therapeutic class).
+
+    Multi-entry cells (NDS+SNDS history joined with newline) are handled by
+    splitting on newline and validating each entry individually for the
+    submission-type check.  The sentinel consistency check uses the whole cell
+    value (a real multi-entry string is never equal to "No NOC record").
     """
     out: list[Finding] = []
 
@@ -399,19 +387,36 @@ def check_noc_consistency(din: str, row: dict) -> list[Finding]:
         if _is_sentinel(tclass):
             out.append(Finding("F1_NOC_TCLASS_MISSING", din, "noc_therapeutic_class", "INFO",
                                str(tclass),
-                               "noc_therapeutic_class absent while all four core NOC fields are "
+                               "noc_therapeutic_class absent while all core NOC fields are "
                                "populated (common — NOC source often omits therapeutic class)", 1))
 
-    sub = str(row.get("noc_submission_type") or "").strip()
+    # Valid submission type tokens (per-entry after splitting multi-entry cells on \n).
+    # SNDS is now valid — supplement events are included in the NDS-lineage history.
+    # SANDS should never appear (excluded at collection time).
     _NOC_VALID_SUBS = {
         "NDS", "ANDS", NO_NOC_RECORD,
         "New Drug Submission (NDS)",
         "Abbreviated New Drug Submission (ANDS)",
+        "Supplement to a New Drug Submission (SNDS)", "SNDS",
     }
-    if sub and sub not in _NOC_VALID_SUBS and not _is_sentinel(sub):
-        out.append(Finding("F1_NOC_SUB_TYPE", din, "noc_submission_type", "ERROR", sub[:80],
-                           "noc_submission_type should be NDS/ANDS (or full text equivalent) "
-                           "or 'No NOC record' (SNDS/SANDS supplemental submissions are filtered)", 1))
+    _SANDS_CHECK_RE = re.compile(
+        r"\bSANDS\b|Supplement\s+to\s+an\s+Abbreviated", re.IGNORECASE
+    )
+    sub_cell = str(row.get("noc_submission_type") or "").strip()
+    for sub_part in sub_cell.split("\n"):
+        sub_part = sub_part.strip()
+        if not sub_part or _is_sentinel(sub_part):
+            continue
+        if _SANDS_CHECK_RE.search(sub_part):
+            out.append(Finding("F1_NOC_SUB_TYPE", din, "noc_submission_type", "ERROR",
+                               sub_part[:80],
+                               "SANDS (Supplement to an Abbreviated NDS) must be excluded "
+                               "from NOC history — only NDS/SNDS/ANDS are valid", 1))
+        elif sub_part not in _NOC_VALID_SUBS:
+            out.append(Finding("F1_NOC_SUB_TYPE", din, "noc_submission_type", "ERROR",
+                               sub_part[:80],
+                               "noc_submission_type entry should be NDS/ANDS/SNDS "
+                               "(or full text equivalent) or 'No NOC record'", 1))
 
     return out
 
@@ -487,13 +492,11 @@ def run_family1(
         rdict = dict(row)
 
         if labeling_active:
-            out.extend(check_excipient_field(din, "excipients_core",    rdict.get("excipients_core")))
-            out.extend(check_excipient_field(din, "excipients_coating", rdict.get("excipients_coating")))
+            out.extend(check_nonmedicinal_ingredients(din, rdict.get("nonmedicinal_ingredients")))
             out.extend(check_pack_style(din, rdict.get("pack_style")))
             out.extend(check_pack_size(din,  rdict.get("pack_size")))
             out.extend(check_size_mm(din,    rdict.get("size_mm")))
             out.extend(check_ph(din,         rdict.get("ph")))
-            out.extend(check_preservatives(din, rdict.get("preservatives")))
             out.extend(check_colour(din,     rdict.get("colour")))
             out.extend(check_shape(din,      rdict.get("shape")))
 
@@ -506,7 +509,7 @@ def run_family1(
 # ─── Family 2: Cross-field coherence ─────────────────────────────────────────
 
 _PM_FIELDS = frozenset({
-    "excipients_core", "excipients_coating", "preservatives",
+    "nonmedicinal_ingredients",
     "ph", "colour", "shape", "size_mm", "weight",
 })
 _LIQUID_FORMS = frozenset({
@@ -553,14 +556,14 @@ def run_family2(
                                    "PM demonstrably exists: some fields populated, others say "
                                    "'No PM available'", 2))
 
-            exc_real   = (_is_real(rdict.get("excipients_core")) and
-                          not _is_no_pm(rdict.get("excipients_core")))
+            nm_real    = (_is_real(rdict.get("nonmedicinal_ingredients")) and
+                          not _is_no_pm(rdict.get("nonmedicinal_ingredients")))
             clr_absent = _is_sentinel(rdict.get("colour")) or _is_no_pm(rdict.get("colour"))
             shp_absent = _is_sentinel(rdict.get("shape"))  or _is_no_pm(rdict.get("shape"))
-            if exc_real and clr_absent and shp_absent:
-                out.append(Finding("F2_EXCIPIENT_NO_APPEARANCE", din, "colour,shape", "WARN",
-                                   str(rdict.get("excipients_core"))[:60],
-                                   "Excipients populated but both colour and shape absent — "
+            if nm_real and clr_absent and shp_absent:
+                out.append(Finding("F2_NM_NO_APPEARANCE", din, "colour,shape", "WARN",
+                                   str(rdict.get("nonmedicinal_ingredients"))[:60],
+                                   "nonmedicinal_ingredients populated but both colour and shape absent — "
                                    "same §6 section", 2))
 
             wt_real   = _is_real(rdict.get("weight"))  and not _is_no_pm(rdict.get("weight"))
@@ -575,26 +578,6 @@ def run_family2(
                 out.append(Finding("F2_SIZE_NO_WEIGHT", din, "weight", "WARN",
                                    f"size_mm={rdict.get('size_mm')}",
                                    "size_mm present but weight absent — same physical descriptor block", 2))
-
-            dosage   = str(rdict.get("dosage_form") or "").lower()
-            is_liq   = any(w in dosage for w in _LIQUID_FORMS)
-            pres_val = str(rdict.get("preservatives") or "").strip()
-            ph_val   = rdict.get("ph")
-            if is_liq and pres_val == "N" and _is_sentinel(ph_val):
-                out.append(Finding("F2_LIQUID_NO_PH", din, "ph", "WARN",
-                                   f"dosage_form={rdict.get('dosage_form')}, preservatives=N",
-                                   "Liquid dosage form with preservatives=N and no pH — both expected", 2))
-
-            core_val  = rdict.get("excipients_core")
-            coat_val  = rdict.get("excipients_coating")
-            coat_real = (_is_real(coat_val) and not _is_no_pm(coat_val)
-                         and str(coat_val).strip() != NA_UNCOATED)
-            core_absent = _is_sentinel(core_val) or _is_no_pm(core_val)
-            if coat_real and core_absent:
-                out.append(Finding("F2_COATING_NO_CORE", din, "excipients_core", "ERROR",
-                                   str(coat_val)[:60],
-                                   "excipients_coating populated but excipients_core absent — "
-                                   "must appear as a pair", 2))
 
         dp_ends = rdict.get("data_protection_ends")
         if dp_ends and _is_real(dp_ends):
@@ -833,54 +816,46 @@ async def _get_pdf_text(
     return text if text else None
 
 
-async def _check_excipients_pdf(
+async def _check_nonmedicinal_pdf(
     client: httpx.AsyncClient, cache: _DiskCache,
-    din: str, drug_code: Any, wb_core: Any, wb_coat: Any,
+    din: str, drug_code: Any, wb_nm: Any,
     needs_ocr: bool = False,
 ) -> list[Finding]:
-    """
-    Anti-hallucination check for excipient fields.
+    """Anti-hallucination check for nonmedicinal_ingredients.
 
-    When needs_ocr=True (workbook row has needs_ocr=1), uses fuzzy matching
-    (≥ 0.9) to tolerate OCR noise.  Fuzzy-but-not-exact matches are INFO, not ERROR.
-    On text-layer pages uses exact substring match.
+    Each comma/semicolon-separated token must appear in the PM PDF.
+    When needs_ocr=True uses fuzzy matching (≥ 0.9) to tolerate OCR noise.
     """
-    has_real = ((_is_real(wb_core) and not _is_no_pm(wb_core)) or
-                (_is_real(wb_coat) and not _is_no_pm(wb_coat)))
-    if not has_real or not _is_real(str(drug_code)):
+    if not _is_real(wb_nm) or _is_no_pm(wb_nm) or not _is_real(str(drug_code)):
         return []
     dc       = str(drug_code).strip()
     pdf_text = await _get_pdf_text(client, cache, dc)
     if pdf_text is None:
-        return [Finding("F3_PDF_SKIPPED", din, "excipients", "SKIPPED", "",
+        return [Finding("F3_PDF_SKIPPED", din, "nonmedicinal_ingredients", "SKIPPED", "",
                         "Could not fetch/parse PM PDF for anti-hallucination check", 3)]
     pdf_lower = pdf_text.lower()
     out: list[Finding] = []
-    for field_name, val in (("excipients_core", wb_core), ("excipients_coating", wb_coat)):
-        if not _is_real(val) or _is_no_pm(val) or str(val).strip() in (NA_UNCOATED, ""):
+    for token in re.split(r"[,;]\s*", str(wb_nm).strip()):
+        token = token.strip()
+        if len(token) < 3:
             continue
-        for token in re.split(r"[,;]\s*", str(val).strip()):
-            token = token.strip()
-            if len(token) < 3:
-                continue
-            if needs_ocr:
-                found, score = _fuzzy_contains(token, pdf_lower, threshold=0.9)
-                if not found:
-                    out.append(Finding("F3_EXCIPIENT_FABRICATED", din, field_name, "ERROR",
-                                       token[:60],
-                                       f"Excipient '{token}' not in PM PDF (fuzzy<0.9, "
-                                       f"score={score:.2f}, OCR page)", 3))
-                elif score < 1.0:
-                    out.append(Finding("F3_EXCIPIENT_OCR_FUZZY", din, field_name, "INFO",
-                                       token[:60],
-                                       f"Excipient '{token}' matched via fuzzy (score={score:.2f}) — "
-                                       "OCR noise tolerance applied", 3))
-            else:
-                if token.lower() not in pdf_lower:
-                    out.append(Finding("F3_EXCIPIENT_FABRICATED", din, field_name, "ERROR",
-                                       token[:60],
-                                       f"Excipient token '{token}' not found verbatim "
-                                       "(case-insensitive) in PM PDF", 3))
+        if needs_ocr:
+            found, score = _fuzzy_contains(token, pdf_lower, threshold=0.9)
+            if not found:
+                out.append(Finding("F3_NM_FABRICATED", din, "nonmedicinal_ingredients", "ERROR",
+                                   token[:60],
+                                   f"Token '{token}' not in PM PDF (fuzzy<0.9, "
+                                   f"score={score:.2f}, OCR page)", 3))
+            elif score < 1.0:
+                out.append(Finding("F3_NM_OCR_FUZZY", din, "nonmedicinal_ingredients", "INFO",
+                                   token[:60],
+                                   f"Token '{token}' matched via fuzzy (score={score:.2f}) — "
+                                   "OCR noise tolerance applied", 3))
+        else:
+            if token.lower() not in pdf_lower:
+                out.append(Finding("F3_NM_FABRICATED", din, "nonmedicinal_ingredients", "ERROR",
+                                   token[:60],
+                                   f"Token '{token}' not found verbatim (case-insensitive) in PM PDF", 3))
     return out
 
 
@@ -994,9 +969,9 @@ async def run_family3(
                 tasks.append(_check_pack_live(
                     client, cache, din, dc,
                     rdict.get("pack_size"), rdict.get("pack_style")))
-                tasks.append(_check_excipients_pdf(
+                tasks.append(_check_nonmedicinal_pdf(
                     client, cache, din, dc,
-                    rdict.get("excipients_core"), rdict.get("excipients_coating"),
+                    rdict.get("nonmedicinal_ingredients"),
                     needs_ocr=nocr))
 
             if stages.get("PATENTS", True):
@@ -1026,7 +1001,7 @@ async def run_family3(
 # ─── Family 4: Determinism + OCR ─────────────────────────────────────────────
 
 _EXTRACT_FIELDS = (
-    "excipients_core", "excipients_coating", "preservatives",
+    "nonmedicinal_ingredients",
     "colour", "shape", "size_mm", "weight", "ph",
 )
 
@@ -1393,12 +1368,14 @@ def select_sample(df: pd.DataFrame, n: int) -> list[str]:
             strats["solution"].append(din)
         if re.search(r"\b(er|extended|modified|controlled|sustained)\b", dosage, re.IGNORECASE):
             strats["er"].append(din)
-        if sub == "NDS":
-            strats["nds"].append(din)
-        elif sub == "ANDS":
-            strats["ands"].append(din)
-        elif sub == NO_NOC_RECORD:
+        # noc_submission_type may be a multi-entry joined cell; check first entry.
+        first_sub = sub.split("\n")[0].strip() if sub else ""
+        if first_sub == NO_NOC_RECORD:
             strats["no_noc"].append(din)
+        elif "ANDS" in first_sub and "NDS" not in first_sub.replace("ANDS", ""):
+            strats["ands"].append(din)
+        elif "NDS" in first_sub:
+            strats["nds"].append(din)
         if _is_real(rdict.get("data_protection_ends")):
             strats["dp"].append(din)
         if any(_is_real(rdict.get(c)) for c in patent_cols):
@@ -1636,6 +1613,105 @@ def write_csv(findings: list[Finding], path: str) -> None:
             })
 
 
+# ─── Block-aware Sheet 1 loader ──────────────────────────────────────────────
+
+def _load_sheet1_for_grading(xlsx_path: str) -> pd.DataFrame:
+    """Load Sheet 1 ("DPD + NOC + Patents") into a flat DataFrame suitable for grading.
+
+    Handles two formats:
+      Legacy / single-product  — standard pandas layout; row 1 is the header.
+      Multi-product side-by-side — row 1 is "PRODUCT KEY:", row 2 is banners,
+                                    row 3 is column headers, rows 4+ are data.
+                                    Each block is extracted and concatenated with
+                                    a leading 'product' column.
+
+    The resulting DataFrame is suitable for all four grading family checks.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    if "DPD + NOC + Patents" not in wb.sheetnames:
+        raise ValueError("Sheet 'DPD + NOC + Patents' not found in workbook")
+    ws = wb["DPD + NOC + Patents"]
+
+    # ── Detect format by inspecting cell A1 ───────────────────────────────────
+    a1 = ws.cell(1, 1).value
+    is_multiproduct = isinstance(a1, str) and a1.strip().upper().startswith("PRODUCT KEY")
+
+    if not is_multiproduct:
+        # Legacy single-product format: pandas reads it directly.
+        return pd.read_excel(xlsx_path, sheet_name="DPD + NOC + Patents", dtype=str)
+
+    # ── Multi-product: parse blocks from row 3 (headers) and row 4+ (data) ───
+    print("  [grader] Detected multi-product side-by-side format — parsing blocks…")
+
+    # Read banner names from row 2 (merged cells; only the first column of each
+    # merged region carries the value in openpyxl).
+    banner_map: dict[int, str] = {}  # col_idx (1-based) → product name
+    for col_idx in range(1, (ws.max_column or 200) + 1):
+        v = ws.cell(2, col_idx).value
+        if v and str(v).strip():
+            # Strip the " (N DINs)" suffix added by the writer
+            raw = str(v).strip()
+            name = re.sub(r"\s+\(\d+\s+DINs?\)\s*$", "", raw, flags=re.IGNORECASE).strip()
+            banner_map[col_idx] = name
+
+    # Row 3 = column headers per block.  None-columns are spacers.
+    max_col = ws.max_column or 200
+    header_row = [ws.cell(3, c).value for c in range(1, max_col + 1)]
+
+    # Find blocks: contiguous non-None header groups.
+    blocks: list[tuple[int, int]] = []
+    start = None
+    for i, h in enumerate(header_row):
+        if h is not None:
+            if start is None:
+                start = i
+        else:
+            if start is not None:
+                blocks.append((start, i - 1))  # 0-indexed inclusive
+                start = None
+    if start is not None:
+        blocks.append((start, len(header_row) - 1))
+
+    if not blocks:
+        return pd.DataFrame()
+
+    # Associate each block with a product name (from banner_map; fallback to index)
+    def _block_product_name(block_start_0indexed: int, block_num: int) -> str:
+        col_1indexed = block_start_0indexed + 1
+        if col_1indexed in banner_map:
+            return banner_map[col_1indexed]
+        return f"Product {block_num + 1}"
+
+    # Read all data rows (row 4 onward)
+    all_rows_raw = list(ws.iter_rows(min_row=4, max_row=ws.max_row, values_only=True))
+
+    # Build one DataFrame per block, then concatenate
+    all_frames: list[pd.DataFrame] = []
+    for b_num, (b_start, b_end) in enumerate(blocks):
+        cols = [str(v) for v in header_row[b_start:b_end + 1]]
+        product_name = _block_product_name(b_start, b_num)
+        data = []
+        for raw_row in all_rows_raw:
+            slice_ = list(raw_row[b_start:b_end + 1])
+            # Only include rows that have at least one non-None value in this block
+            if any(v is not None for v in slice_):
+                data.append([str(v) if v is not None else "" for v in slice_])
+        if data:
+            df_block = pd.DataFrame(data, columns=cols)
+            df_block.insert(0, "product", product_name)
+            all_frames.append(df_block)
+
+    if not all_frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(all_frames, ignore_index=True, sort=False)
+    print(f"  [grader] Parsed {len(blocks)} block(s): "
+          + ", ".join(f"{_block_product_name(b, i)} ({sum(1 for r in all_rows_raw if any(v is not None for v in r[b:e+1]))} rows)" for i, (b, e) in enumerate(blocks)))
+    return combined
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 async def _run(xlsx_path: str, sample_n: int, cache_dir: str) -> None:
@@ -1650,7 +1726,7 @@ async def _run(xlsx_path: str, sample_n: int, cache_dir: str) -> None:
 
     print(f"Loading: {xlsx_path}")
     try:
-        df = pd.read_excel(xlsx_path, sheet_name="DPD + NOC + Patents", dtype=str)
+        df = _load_sheet1_for_grading(xlsx_path)
     except Exception as e:
         print(f"ERROR reading Sheet 1: {e}")
         return

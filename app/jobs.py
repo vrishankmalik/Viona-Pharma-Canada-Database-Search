@@ -10,8 +10,9 @@ from typing import Optional
 @dataclasses.dataclass
 class JobState:
     job_id: str
-    query: str
+    query: str   # primary query (first in list, or the single query)
     field: str
+    queries: list[str] = dataclasses.field(default_factory=list)  # full list for multi-product
     status: str = "running"  # running | complete | error
     events: list[dict] = dataclasses.field(default_factory=list)
     # Signalled whenever a new event is appended
@@ -31,8 +32,19 @@ class JobState:
 _jobs: dict[str, JobState] = {}
 
 
-def create_job(job_id: str, query: str, field: str) -> JobState:
-    job = JobState(job_id=job_id, query=query, field=field)
+def create_job(
+    job_id: str,
+    query: str,
+    field: str,
+    queries: Optional[list[str]] = None,
+) -> JobState:
+    effective_queries = queries or [query]
+    job = JobState(
+        job_id=job_id,
+        query=query,
+        field=field,
+        queries=effective_queries,
+    )
     _jobs[job_id] = job
     return job
 

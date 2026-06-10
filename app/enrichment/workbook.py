@@ -59,10 +59,11 @@ _NEVER_DROP_COLS = frozenset({
     # Patent summary (patent_1_* is protected separately as the floor group)
     "patent_count",
     # NOC (also guarded by "No NOC record" sentinels, belt-and-suspenders)
-    "noc_date", "noc_submission_type", "noc_therapeutic_class",
+    "noc_date", "reason_for_supplement", "submission_class",
+    "noc_submission_type", "noc_therapeutic_class",
     # Labeling
-    "active_ingredient", "excipients_core", "excipients_coating",
-    "preservatives", "pack_size", "pack_style",
+    "active_ingredient", "nonmedicinal_ingredients",
+    "pack_size", "pack_style",
     "colour", "shape", "size_mm", "weight", "ph",
     # Data protection (always present even when no record matches)
     "dp_6yr_no_file_date", "pediatric_extension", "data_protection_ends",
@@ -73,12 +74,13 @@ _NEVER_DROP_COLS = frozenset({
 _SHEET1_PRE_PATENT_COLS = (
     "din", "ingredient", "brand_name", "company", "strength", "dosage_form",
     "route", "status", "_drug_code", "_schedule", "_last_update",
-    "noc_date", "noc_submission_type", "noc_therapeutic_class",
+    "noc_date", "reason_for_supplement", "submission_class",
+    "noc_submission_type", "noc_therapeutic_class",
     "patent_count",
 )
 _SHEET1_POST_PATENT_COLS = (
-    "active_ingredient", "excipients_core", "excipients_coating",
-    "preservatives", "pack_size", "pack_style", "colour", "shape", "size_mm",
+    "active_ingredient", "nonmedicinal_ingredients",
+    "pack_size", "pack_style", "colour", "shape", "size_mm",
     "weight", "ph", "needs_ocr",
     "dp_6yr_no_file_date", "pediatric_extension", "data_protection_ends",
 )
@@ -181,22 +183,40 @@ def _prune_sparse_columns(
 
     return df.drop(columns=cols_to_drop)
 
-# Supplement submission types to drop from Sheet 1 (SNDS / SANDS)
-_SUPPLEMENT_TYPE_RE = re.compile(
-    r"\bSNDS\b|\bSANDS\b|Supplement\s+to\s+(a\s+New|an\s+Abbreviated)",
+# ANDS lineage: ANDS and SANDS — excluded from the NDS multi-entry history.
+# A DIN whose only entries are ANDS-lineage gets a single ANDS entry.
+# A DIN whose only entries are SANDS gets "No NOC record" (SANDS excluded entirely).
+_ANDS_LINEAGE_RE = re.compile(
+    r"\bANDS\b|\bSANDS\b|Abbreviated\s+New\s+Drug\s+Submission",
+    re.IGNORECASE,
+)
+# Narrower match for SANDS specifically (Supplement to an Abbreviated NDS)
+_SANDS_RE = re.compile(
+    r"\bSANDS\b|Supplement\s+to\s+an\s+Abbreviated",
     re.IGNORECASE,
 )
 
-# Sentinel dict for DPD DINs that have no matching NOC record
+# Separator used when joining multiple NOC history entries into a single cell.
+# Newline is safe: NOC JSON API fields are single-line strings and cannot
+# contain literal newlines.  Excel renders newlines as in-cell line breaks.
+_NOC_JOIN_SEP = "\n"
+
+# Sentinel dict for DPD DINs that have no matching NOC record.
+# Every NOC column gets the same sentinel so downstream readers can detect
+# absence cleanly.  reason_for_supplement is allowed to be blank for real
+# NDS entries (NDS has no supplement reason), but "No NOC record" is used
+# here so the sentinel is uniform and unambiguous.
 _NO_NOC_RECORD = {
     "noc_date": "No NOC record",
+    "reason_for_supplement": "No NOC record",
+    "submission_class": "No NOC record",
     "noc_submission_type": "No NOC record",
     "noc_therapeutic_class": "No NOC record",
 }
 
 _LABELING_FIELDS = (
-    "active_ingredient", "excipients_core", "excipients_coating",
-    "preservatives", "pack_size", "pack_style",
+    "active_ingredient", "nonmedicinal_ingredients",
+    "pack_size", "pack_style",
     "colour", "shape", "size_mm", "weight", "ph",
 )
 
@@ -231,24 +251,89 @@ def _collect_dpd_rows(records: list[DrugRecord]) -> dict[str, dict[str, Any]]:
 
 
 def _collect_noc_rows(records: list[DrugRecord]) -> dict[str, dict[str, Any]]:
-    """Build DIN-keyed dict from NOC records.
+    """Build DIN-keyed dict from NOC records with full NDS-lineage history.
 
-    Supplement rows (SNDS / SANDS) are dropped — only NDS, ANDS, and unknown
-    types are included.  noc_record_url excluded per Change 2.
+    NDS lineage (NDS + SNDS): ALL entries are collected per DIN and joined
+    into multi-entry cells, ordered chronologically ascending by noc_date.
+    ANDS-lineage entries (ANDS, SANDS) are excluded from the NDS history.
+    A DIN with only ANDS entries receives a single ANDS entry (no stacking).
+    A DIN with only SANDS entries is skipped (becomes "No NOC record").
+
+    Separator:  _NOC_JOIN_SEP = newline.  Cannot appear in NOC JSON API
+    string fields.  All joined columns for a DIN have identical entry counts
+    so reading position N across columns yields one coherent NOC event.
+
+    reason_for_supplement placeholder: "" (empty string) for NDS entries
+    (NDS is not a supplement, so there is no reason).  This preserves
+    positional alignment — a missing reason must never shift other columns.
     """
-    out: dict[str, dict[str, Any]] = {}
+    # First pass: collect all valid NOC entries per DIN, preserving all history.
+    by_din: dict[str, list[dict]] = {}
     for r in records:
         if r.source != "NOC" or _is_excluded_din(r.din):
             continue
-        sub_type = r.source_specific.get("submission_type") or ""
-        if _SUPPLEMENT_TYPE_RE.search(sub_type):
-            continue  # drop SNDS / SANDS rows
         din = r.din.strip()  # type: ignore[union-attr]
-        out[din] = {
-            "noc_date": r.source_specific.get("noc_date"),
-            "noc_submission_type": sub_type or None,
-            "noc_therapeutic_class": r.source_specific.get("therapeutic_class"),
+        entry = {
+            "noc_date": r.source_specific.get("noc_date") or "",
+            "noc_submission_type": r.source_specific.get("submission_type") or "",
+            "submission_class": r.source_specific.get("submission_class") or "",
+            "reason_for_supplement": r.source_specific.get("reason_for_supplement") or "",
+            "noc_therapeutic_class": r.source_specific.get("therapeutic_class") or "",
         }
+        by_din.setdefault(din, []).append(entry)
+
+    out: dict[str, dict[str, Any]] = {}
+    for din, entries in by_din.items():
+        # Partition entries into NDS-lineage and pure-ANDS.
+        # NDS-lineage = anything not matching ANDS lineage (covers NDS, SNDS, unknown).
+        # Pure ANDS   = ANDS but not SANDS.
+        # SANDS       = excluded entirely (ANDS supplement; has no NDS parent DIN entry).
+        nds_entries = [
+            e for e in entries
+            if not _ANDS_LINEAGE_RE.search(e["noc_submission_type"])
+        ]
+        ands_entries = [
+            e for e in entries
+            if _ANDS_LINEAGE_RE.search(e["noc_submission_type"])
+            and not _SANDS_RE.search(e["noc_submission_type"])
+        ]
+
+        if nds_entries:
+            # Sort NDS-lineage chronologically ascending (oldest → newest).
+            working = sorted(nds_entries, key=lambda e: e["noc_date"])
+        elif ands_entries:
+            # ANDS-only DIN: single most-recent ANDS entry (no multi-history).
+            working = [sorted(ands_entries, key=lambda e: e["noc_date"])[-1]]
+        else:
+            # SANDS-only or empty: skip; DIN gets "No NOC record" sentinel.
+            continue
+
+        if len(working) == 1:
+            e = working[0]
+            out[din] = {
+                "noc_date": e["noc_date"] or None,
+                "reason_for_supplement": e["reason_for_supplement"] or None,
+                "submission_class": e["submission_class"] or None,
+                "noc_submission_type": e["noc_submission_type"] or None,
+                "noc_therapeutic_class": e["noc_therapeutic_class"] or None,
+            }
+        else:
+            # Multi-entry: join all fields with _NOC_JOIN_SEP.
+            # All five lists have identical length (len(working)) so position N
+            # is consistent across every column for a given DIN.
+            out[din] = {
+                "noc_date": _NOC_JOIN_SEP.join(
+                    e["noc_date"] for e in working),
+                "reason_for_supplement": _NOC_JOIN_SEP.join(
+                    e["reason_for_supplement"] for e in working),
+                "submission_class": _NOC_JOIN_SEP.join(
+                    e["submission_class"] for e in working),
+                "noc_submission_type": _NOC_JOIN_SEP.join(
+                    e["noc_submission_type"] for e in working),
+                "noc_therapeutic_class": _NOC_JOIN_SEP.join(
+                    e["noc_therapeutic_class"] for e in working),
+            }
+
     return out
 
 
@@ -361,9 +446,13 @@ def _drop_empty_sheet1_cols(df: pd.DataFrame) -> pd.DataFrame:
         if all(_col_is_all_empty(df[c]) for c in grp):
             cols_to_drop.extend(grp)
 
-    # 2. Non-patent columns — drop individually if all-empty
+    # 2. Non-patent columns — drop individually if all-empty.
+    # Protected schema columns (_NEVER_DROP_COLS) are always kept even when
+    # all-empty, because they are part of the declared output contract.
     for col in df.columns:
-        if col not in patent_group_cols and _col_is_all_empty(df[col]):
+        if col in patent_group_cols or col in _NEVER_DROP_COLS:
+            continue
+        if _col_is_all_empty(df[col]):
             cols_to_drop.append(col)
 
     if cols_to_drop:
@@ -432,6 +521,7 @@ def build_sheet1(
     ordered += [c for c in df.columns if c not in set(ordered)]
 
     df = df[ordered].sort_values("din", kind="stable").reset_index(drop=True)
+    df = _drop_empty_sheet1_cols(df)
     return _prune_sparse_columns(df)
 
 
@@ -575,6 +665,291 @@ def build_workbook(
     fetch_data_protection_table()); None means the three dp_* columns are blank.
     """
     return build_workbook_with_data(response, source_errors, dp_table)[0]
+
+
+# ── Multi-product side-by-side workbook ──────────────────────────────────────
+
+# Light-fill palette for product blocks.  8 distinct accessible colors;
+# cycles for 9+ products.  All are light enough that black text remains
+# readable; distinct enough that adjacent products are easy to tell apart.
+#
+# Rendered swatches (hex → name):
+#   D4E6F1  sky blue       D5F5E3  mint green     FEF9E7  cream yellow
+#   E8DAEF  lavender       FDEBD0  peach          D1F2EB  seafoam teal
+#   FDEDEC  light rose     D6EAF8  steel blue
+_BLOCK_COLORS: list[str] = [
+    "D4E6F1",  # sky blue
+    "D5F5E3",  # mint green
+    "FEF9E7",  # cream yellow
+    "E8DAEF",  # lavender
+    "FDEBD0",  # peach
+    "D1F2EB",  # seafoam teal
+    "FDEDEC",  # light rose
+    "D6EAF8",  # steel blue
+]
+
+# Spacer columns written between adjacent product blocks
+_BLOCK_SPACER = 1
+
+# A slightly darker tint of each block color for the banner row (50% darker)
+_BLOCK_BANNER_COLORS: list[str] = [
+    "A9CDDF",  # sky blue darker
+    "AAEBC6",  # mint green darker
+    "FDF2CE",  # cream yellow darker
+    "D4B8E4",  # lavender darker
+    "FBD7A1",  # peach darker
+    "A2E5D7",  # seafoam teal darker
+    "FBDBD9",  # light rose darker
+    "AECFF0",  # steel blue darker
+]
+
+
+def _block_color(idx: int) -> str:
+    return _BLOCK_COLORS[idx % len(_BLOCK_COLORS)]
+
+
+def _block_banner_color(idx: int) -> str:
+    return _BLOCK_BANNER_COLORS[idx % len(_BLOCK_BANNER_COLORS)]
+
+
+def _safe_cell_val(val: Any) -> Any:
+    """Convert a pandas/numpy value to a plain Python type for openpyxl."""
+    import numpy as np  # numpy is a pandas dependency; always available
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, np.integer):
+        return int(val)
+    if isinstance(val, np.floating):
+        return float(val)
+    if isinstance(val, np.bool_):
+        return bool(val)
+    return val
+
+
+def _write_multiblock_sheet(
+    ws: Any,
+    blocks: list[tuple[str, pd.DataFrame]],
+    colors: list[str],
+    banner_colors: list[str],
+    spacer_cols: int = _BLOCK_SPACER,
+) -> None:
+    """Write N product DataFrames side-by-side on one openpyxl worksheet.
+
+    Layout:
+      Row 1  — KEY LEGEND: "PRODUCT KEY:" label + one colored cell per product.
+      Row 2  — BANNER: merged-cell product name, colored, across each block.
+      Row 3  — HEADERS: column names for each block (standard gray fill).
+      Row 4+ — DATA: per-DIN rows, top-aligned (ragged heights are expected).
+
+    freeze_panes is set to "A4" so the key, banner, and header rows stay
+    visible when scrolling down.  No column freeze is applied since
+    side-by-side blocks require horizontal scrolling.
+
+    Autofilter is placed on the first block's header row (openpyxl supports
+    only one autofilter per sheet).
+
+    Between blocks, `spacer_cols` empty columns act as visual separators.
+    """
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    KEY_ROW = 1
+    BANNER_ROW = 2
+    HEADER_ROW = 3
+    DATA_START = 4
+
+    HEADER_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    KEY_LABEL_FILL = PatternFill(start_color="404040", end_color="404040", fill_type="solid")
+
+    # ── Compute column ranges for each block ──────────────────────────────────
+    block_col_ranges: list[tuple[int, int]] = []
+    col_cursor = 1
+    for _, df in blocks:
+        n_cols = len(df.columns) if not df.empty and len(df.columns) > 0 else 1
+        block_col_ranges.append((col_cursor, col_cursor + n_cols - 1))
+        col_cursor += n_cols + spacer_cols
+
+    # ── Row 1: Key legend ─────────────────────────────────────────────────────
+    label_cell = ws.cell(row=KEY_ROW, column=1)
+    label_cell.value = "PRODUCT KEY:"
+    label_cell.font = Font(bold=True, name="Calibri", size=10, color="FFFFFF")
+    label_cell.fill = KEY_LABEL_FILL
+    label_cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.column_dimensions["A"].width = 14
+
+    for i, ((name, _df), color) in enumerate(zip(blocks, colors)):
+        key_col = 2 + i  # compact row: B, C, D, …
+        cell = ws.cell(row=KEY_ROW, column=key_col)
+        cell.value = name
+        cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+        cell.font = Font(bold=True, name="Calibri", size=10)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[get_column_letter(key_col)].width = max(len(name) + 4, 14)
+
+    ws.row_dimensions[KEY_ROW].height = 20
+
+    # ── Row 2: Banners ────────────────────────────────────────────────────────
+    for (name, df), bcolor, (c_start, c_end) in zip(blocks, banner_colors, block_col_ranges):
+        n_dins = len(df) if not df.empty else 0
+        banner_text = f"{name.upper()}  ({n_dins} DIN{'s' if n_dins != 1 else ''})"
+        cell = ws.cell(row=BANNER_ROW, column=c_start)
+        cell.value = banner_text
+        cell.fill = PatternFill(start_color=bcolor, end_color=bcolor, fill_type="solid")
+        cell.font = Font(bold=True, name="Calibri", size=11)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+        if c_end > c_start:
+            ws.merge_cells(
+                start_row=BANNER_ROW, start_column=c_start,
+                end_row=BANNER_ROW, end_column=c_end,
+            )
+    ws.row_dimensions[BANNER_ROW].height = 22
+
+    # ── Row 3: Column headers ─────────────────────────────────────────────────
+    for (name, df), color, (c_start, c_end) in zip(blocks, colors, block_col_ranges):
+        cols = list(df.columns) if not df.empty else []
+        for j, col_name in enumerate(cols):
+            cell = ws.cell(row=HEADER_ROW, column=c_start + j)
+            cell.value = col_name
+            cell.font = Font(bold=True, name="Calibri", size=10)
+            cell.fill = HEADER_FILL
+            cell.alignment = Alignment(wrap_text=False)
+    ws.row_dimensions[HEADER_ROW].height = 18
+
+    # ── Rows 4+: Data (top-aligned, ragged) ───────────────────────────────────
+    for (name, df), (c_start, _c_end) in zip(blocks, block_col_ranges):
+        if df.empty:
+            continue
+        for r_idx, (_idx, row_series) in enumerate(df.iterrows()):
+            excel_row = DATA_START + r_idx
+            for j, col_name in enumerate(df.columns):
+                val = _safe_cell_val(row_series[col_name])
+                cell = ws.cell(row=excel_row, column=c_start + j)
+                cell.value = val
+                cell.font = Font(name="Calibri", size=10)
+
+    # ── Column widths ──────────────────────────────────────────────────────────
+    for (name, df), (c_start, _c_end) in zip(blocks, block_col_ranges):
+        for j, col_name in enumerate(df.columns if not df.empty else []):
+            max_val_len = (
+                df[col_name].fillna("").astype(str).str.len().max()
+                if not df.empty else 0
+            )
+            width = min(max(len(str(col_name)) + 2, int(max_val_len or 0) + 2), 60)
+            ws.column_dimensions[get_column_letter(c_start + j)].width = width
+
+    # ── Freeze top 3 rows (key + banner + header) ─────────────────────────────
+    ws.freeze_panes = "A4"
+
+    # ── Autofilter on the first block's header row ─────────────────────────────
+    if block_col_ranges and blocks and not blocks[0][1].empty:
+        c_start, c_end = block_col_ranges[0]
+        ws.auto_filter.ref = (
+            f"{get_column_letter(c_start)}{HEADER_ROW}:"
+            f"{get_column_letter(c_end)}{HEADER_ROW}"
+        )
+
+
+def build_workbook_multiproduct(
+    products: list[tuple[str, SearchResponse]],
+    source_errors: Optional[dict[str, Optional[str]]] = None,
+    dp_table: Optional[list[dict]] = None,
+) -> "tuple[bytes, pd.DataFrame, pd.DataFrame]":
+    """Build a side-by-side multi-product two-tab workbook.
+
+    Each product in ``products`` becomes one color-coded horizontal block on
+    both Tab 1 ("DPD + NOC + Patents") and Tab 2 ("Generic Submissions").  The
+    same color is used on both tabs so a product is visually consistent.
+
+    Single-product is a degenerate case (one block, no spacer) and produces
+    the same underlying data as ``build_workbook_with_data``.
+
+    Returns (xlsx_bytes, combined_sheet1_df, combined_sheet2_df).
+    The combined DataFrames have a ``product`` column prepended (used by the
+    dashboard JSON view) and are a flat concatenation of all product blocks.
+    """
+    import openpyxl
+
+    colors = [_block_color(i) for i in range(len(products))]
+    banner_colors = [_block_banner_color(i) for i in range(len(products))]
+
+    # ── Build per-product DataFrames ──────────────────────────────────────────
+    sheet1_blocks: list[tuple[str, pd.DataFrame]] = []
+    sheet2_blocks: list[tuple[str, pd.DataFrame]] = []
+    for name, response in products:
+        s1 = build_sheet1(response, dp_table=dp_table)
+        s2 = build_sheet2(response)
+        sheet1_blocks.append((name, s1))
+        sheet2_blocks.append((name, s2))
+
+    # ── Assemble XLSX via openpyxl directly (not pandas ExcelWriter) ──────────
+    buf = io.BytesIO()
+    wb = openpyxl.Workbook()
+
+    ws1 = wb.active
+    ws1.title = "DPD + NOC + Patents"
+    _write_multiblock_sheet(ws1, sheet1_blocks, colors, banner_colors)
+
+    ws2 = wb.create_sheet(title="Generic Submissions")
+    _write_multiblock_sheet(ws2, sheet2_blocks, colors, banner_colors)
+
+    if source_errors is not None:
+        _build_status_sheet_multi(wb, products, source_errors)
+
+    wb.save(buf)
+    xlsx_bytes = buf.getvalue()
+
+    # ── Build combined flat DataFrames for the dashboard (JSON snapshot) ──────
+    def _concat_with_product_col(
+        named_dfs: list[tuple[str, pd.DataFrame]],
+    ) -> pd.DataFrame:
+        frames = []
+        for name, df in named_dfs:
+            if not df.empty:
+                dfc = df.copy()
+                dfc.insert(0, "product", name)
+                frames.append(dfc)
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True, sort=False)
+
+    combined_s1 = _concat_with_product_col(sheet1_blocks)
+    combined_s2 = _concat_with_product_col(sheet2_blocks)
+
+    return xlsx_bytes, combined_s1, combined_s2
+
+
+def _build_status_sheet_multi(
+    wb: Any,
+    products: list[tuple[str, SearchResponse]],
+    source_errors: dict[str, Optional[str]],
+) -> None:
+    """Append a ⚠ Source Status sheet when allow_partial=True."""
+    from openpyxl.styles import Font, PatternFill
+    ws = wb.create_sheet(title="⚠ Source Status")
+    headers = ["product", "source", "status", "record_count", "error_message", "warning"]
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.value = h
+        cell.font = Font(bold=True, name="Calibri", size=10)
+        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+
+    row_idx = 2
+    for name, response in products:
+        for src in response.sources:
+            ws.cell(row=row_idx, column=1).value = name
+            ws.cell(row=row_idx, column=2).value = src.source
+            ws.cell(row=row_idx, column=3).value = src.status
+            ws.cell(row=row_idx, column=4).value = src.count
+            ws.cell(row=row_idx, column=5).value = src.error_message or ""
+            ws.cell(row=row_idx, column=6).value = (
+                "⚠ DATA MISSING FROM THIS EXPORT" if src.status == "error" else ""
+            )
+            row_idx += 1
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

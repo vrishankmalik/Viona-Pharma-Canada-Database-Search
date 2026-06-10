@@ -53,14 +53,26 @@ def _dpd(din: str, brand: str = "BRAND", strength: str = "50 mg") -> DrugRecord:
     )
 
 
-def _noc(din: str, brand: str = "BRAND", submission_type: str = "NDS") -> DrugRecord:
+def _noc(
+    din: str,
+    brand: str = "BRAND",
+    submission_type: str = "NDS",
+    submission_class: str = "New Active Substance (NAS)",
+    reason_for_supplement: str = "",
+    noc_date: str = "2019-05-24",
+) -> DrugRecord:
     return DrugRecord(
         source="NOC",
         din=din,
         brand_name=brand,
         company="Novartis",
         ingredient="alpelisib",
-        source_specific={"noc_date": "2019-05-24", "submission_type": submission_type},
+        source_specific={
+            "noc_date": noc_date,
+            "submission_type": submission_type,
+            "submission_class": submission_class,
+            "reason_for_supplement": reason_for_supplement or None,
+        },
     )
 
 
@@ -230,6 +242,7 @@ def test_build_workbook_sheet1_has_labeling_columns(tmp_path):
     # Minimal labeling data keeps labeling columns from being pruned.
     store_mod.upsert_labeling("02498014", {
         "active_ingredient": "alpelisib",
+        "nonmedicinal_ingredients": "colloidal silicon dioxide, lactose monohydrate",
         "colour": "Pink",
         "shape": "Round",
         "ph": "Not stated",
@@ -243,8 +256,11 @@ def test_build_workbook_sheet1_has_labeling_columns(tmp_path):
 
     response = _make_response(dpd_records=[_dpd("02498014")])
     df = build_sheet1(response)
-    for col in ("colour", "shape", "ph"):
+    for col in ("nonmedicinal_ingredients", "colour", "shape", "ph"):
         assert col in df.columns, f"Expected labeling column '{col}' in Sheet 1"
+    # Old columns must be absent
+    for old_col in ("excipients_core", "excipients_coating", "preservatives"):
+        assert old_col not in df.columns, f"Stale column '{old_col}' must not appear in Sheet 1"
 
 
 # ── Test 5: patent block aggregation ─────────────────────────────────────────
@@ -384,15 +400,17 @@ async def test_export_allow_partial_builds_with_warning(mock_noc, mock_dpd, mock
 
 # ── Test 7: SNDS/SANDS filtering ─────────────────────────────────────────────
 
-def test_snds_rows_excluded_from_sheet1():
-    """NOC records with SNDS or SANDS submission types must be dropped from Sheet 1."""
+def test_snds_rows_included_in_nds_history():
+    """SNDS entries are NDS-lineage and must appear in the workbook (not discarded)."""
     from app.enrichment.workbook import build_sheet1
 
     response = _make_response(
         dpd_records=[_dpd("02498014"), _dpd("02498022")],
         noc_records=[
-            _noc("02498014", submission_type="NDS"),                             # keep
-            _noc("02498022", submission_type="Supplement to a New Drug Submission (SNDS)"),  # drop
+            _noc("02498014", submission_type="NDS"),
+            _noc("02498022", submission_type="Supplement to a New Drug Submission (SNDS)",
+                 submission_class="Other",
+                 reason_for_supplement="New formulation"),
         ],
     )
     df = build_sheet1(response)
@@ -402,17 +420,22 @@ def test_snds_rows_excluded_from_sheet1():
     assert "02498014" in dins
     assert "02498022" in dins
 
-    # 02498014 should have real NOC data; 02498022 should have "No NOC record"
+    # 02498014 should have NDS data; 02498022 should have SNDS data (not "No NOC record")
     row_nds = df[df["din"] == "02498014"].iloc[0]
     row_snds = df[df["din"] == "02498022"].iloc[0]
     assert row_nds["noc_submission_type"] == "NDS"
-    assert row_snds["noc_submission_type"] == "No NOC record", (
-        f"Expected 'No NOC record' for filtered SNDS row, got: {row_snds['noc_submission_type']!r}"
+    assert "SNDS" in str(row_snds["noc_submission_type"]) or "Supplement" in str(row_snds["noc_submission_type"]), (
+        f"Expected SNDS data for NDS-lineage SNDS row, got: {row_snds['noc_submission_type']!r}"
     )
+    assert row_snds["noc_submission_type"] != "No NOC record", (
+        "SNDS entries must not become 'No NOC record' — they are NDS-lineage"
+    )
+    # reason_for_supplement should be populated for SNDS rows
+    assert row_snds["reason_for_supplement"] == "New formulation"
 
 
 def test_sands_rows_excluded_from_sheet1():
-    """SANDS submissions must also be dropped."""
+    """SANDS submissions are ANDS-lineage and must be excluded → 'No NOC record'."""
     from app.enrichment.workbook import build_sheet1
 
     response = _make_response(
@@ -424,6 +447,7 @@ def test_sands_rows_excluded_from_sheet1():
     df = build_sheet1(response)
     row = df[df["din"] == "02498022"].iloc[0]
     assert row["noc_submission_type"] == "No NOC record"
+    assert row["submission_class"] == "No NOC record"
 
 
 def test_no_noc_record_din_gets_sentinel():
@@ -445,31 +469,45 @@ def test_no_noc_record_din_gets_sentinel():
     assert row_with_noc["noc_date"] == "2019-05-24"
 
     # Row without NOC match should have sentinel in every noc_* column
-    for col in ("noc_date", "noc_submission_type", "noc_therapeutic_class"):
+    for col in ("noc_date", "reason_for_supplement", "submission_class",
+                "noc_submission_type", "noc_therapeutic_class"):
         assert row_no_noc[col] == "No NOC record", (
             f"Expected 'No NOC record' in column '{col}', got: {row_no_noc[col]!r}"
         )
 
 
 def test_noc_only_column_values_after_filtering():
-    """After SNDS/SANDS filtering, only NDS, ANDS, and 'No NOC record' appear in noc_submission_type."""
+    """After collection: NDS, ANDS, SNDS are valid; SANDS must never appear."""
+    import re
     from app.enrichment.workbook import build_sheet1
 
+    _SANDS_RE = re.compile(
+        r"\bSANDS\b|Supplement\s+to\s+an\s+Abbreviated", re.IGNORECASE
+    )
     response = _make_response(
         dpd_records=[_dpd("02498014"), _dpd("02498022"), _dpd("02498030")],
         noc_records=[
             _noc("02498014", submission_type="NDS"),
-            _noc("02498022", submission_type="ANDS"),
-            _noc("02498030", submission_type="Supplement to a New Drug Submission (SNDS)"),
+            _noc("02498022", submission_type="Abbreviated New Drug Submission (ANDS)"),
+            _noc("02498030", submission_type="Supplement to a New Drug Submission (SNDS)",
+                 submission_class="Other", reason_for_supplement="Extended indication"),
         ],
     )
     df = build_sheet1(response)
 
-    allowed = {"NDS", "ANDS", "No NOC record"}
     for val in df["noc_submission_type"].dropna():
-        assert str(val) in allowed, (
-            f"Unexpected noc_submission_type in Sheet 1: {val!r}"
-        )
+        for part in str(val).split("\n"):
+            part = part.strip()
+            if part and part != "No NOC record":
+                assert not _SANDS_RE.search(part), (
+                    f"SANDS must not appear in noc_submission_type, got: {part!r}"
+                )
+
+    # SNDS DIN should have real SNDS data (not "No NOC record")
+    row_snds = df[df["din"] == "02498030"].iloc[0]
+    assert row_snds["noc_submission_type"] != "No NOC record", (
+        "SNDS entry (NDS-lineage) must not become 'No NOC record'"
+    )
 
 
 # ── Test 8: No PM available sentinel ─────────────────────────────────────────
@@ -543,11 +581,12 @@ def test_sentinel_values_prevent_column_drop(tmp_path):
     response = _make_response(dpd_records=[_dpd("02498014"), _dpd("02498022")])
     df = build_sheet1(response)
 
-    # All rows have "No NOC record" in noc_brand_name — must NOT be dropped
-    assert "noc_brand_name" in df.columns, (
-        "noc_brand_name must be kept even when all values are the 'No NOC record' sentinel"
-    )
-    assert "noc_submission_type" in df.columns
+    # All rows have "No NOC record" in noc_* columns — must NOT be dropped
+    for col in ("noc_date", "reason_for_supplement", "submission_class",
+                "noc_submission_type"):
+        assert col in df.columns, (
+            f"{col} must be kept even when all values are the 'No NOC record' sentinel"
+        )
 
 
 def test_single_nonempty_row_prevents_column_drop(tmp_path):
@@ -730,3 +769,448 @@ def test_sentinel_values_protect_column():
         "'No NOC record' sentinel must count as non-empty and protect the column"
     )
     assert "brand_name" in pruned.columns
+
+
+# ── Test 10: new NOC columns — submission_class and reason_for_supplement ─────
+
+def test_new_noc_columns_present_for_nds_record():
+    """A plain NDS DIN has submission_class populated and reason_for_supplement blank."""
+    from app.enrichment.workbook import build_sheet1
+
+    response = _make_response(
+        dpd_records=[_dpd("02498014")],
+        noc_records=[
+            _noc("02498014", submission_type="NDS",
+                 submission_class="New Active Substance (NAS)"),
+        ],
+    )
+    df = build_sheet1(response)
+    assert "submission_class" in df.columns, "submission_class column missing"
+    assert "reason_for_supplement" in df.columns, "reason_for_supplement column missing"
+    row = df[df["din"] == "02498014"].iloc[0]
+    assert row["submission_class"] == "New Active Substance (NAS)"
+    # NDS is not a supplement — reason_for_supplement should be blank/None, not "No NOC record"
+    assert row["reason_for_supplement"] is None or str(row["reason_for_supplement"]).strip() in ("", "None")
+
+
+def test_new_noc_columns_sentinel_for_no_noc_din():
+    """A DIN with no NOC record gets 'No NOC record' in all five noc_* columns."""
+    from app.enrichment.workbook import build_sheet1
+
+    response = _make_response(
+        dpd_records=[_dpd("02498014"), _dpd("02498022")],
+        noc_records=[_noc("02498014")],
+    )
+    df = build_sheet1(response)
+    row = df[df["din"] == "02498022"].iloc[0]
+    for col in ("noc_date", "reason_for_supplement", "submission_class",
+                "noc_submission_type", "noc_therapeutic_class"):
+        assert row[col] == "No NOC record", (
+            f"Column '{col}' should be 'No NOC record' for DIN with no NOC, got: {row[col]!r}"
+        )
+
+
+def test_ands_din_shows_single_entry_no_multi_history():
+    """An ANDS/generic DIN shows its ANDS data as a single entry (no multi-history)."""
+    from app.enrichment.workbook import build_sheet1
+
+    response = _make_response(
+        dpd_records=[_dpd("02498014")],
+        noc_records=[
+            _noc("02498014", submission_type="Abbreviated New Drug Submission (ANDS)",
+                 submission_class="Other"),
+        ],
+    )
+    df = build_sheet1(response)
+    row = df[df["din"] == "02498014"].iloc[0]
+    assert row["noc_submission_type"] == "Abbreviated New Drug Submission (ANDS)"
+    assert row["submission_class"] == "Other"
+    # Single entry — no newline separator
+    assert "\n" not in str(row["noc_date"])
+    assert "\n" not in str(row["noc_submission_type"])
+
+
+def test_multi_entry_nds_history_aligned():
+    """A DIN appearing in two NDS NOC entries gets both joined, positionally aligned."""
+    from app.enrichment.workbook import build_sheet1
+
+    response = _make_response(
+        dpd_records=[_dpd("02498014")],
+        noc_records=[
+            _noc("02498014", submission_type="NDS",
+                 submission_class="New Active Substance (NAS)", noc_date="2014-11-12"),
+            _noc("02498014", submission_type="NDS",
+                 submission_class="Admin", noc_date="2020-01-29"),
+        ],
+    )
+    df = build_sheet1(response)
+    row = df[df["din"] == "02498014"].iloc[0]
+
+    # Both entries joined with newline
+    dates = str(row["noc_date"]).split("\n")
+    classes = str(row["submission_class"]).split("\n")
+    reasons = str(row["reason_for_supplement"]).split("\n")
+    sub_types = str(row["noc_submission_type"]).split("\n")
+
+    assert len(dates) == 2, f"Expected 2 date entries, got: {dates}"
+    assert len(classes) == len(dates), "submission_class and noc_date must have equal entry count"
+    assert len(reasons) == len(dates), "reason_for_supplement and noc_date must have equal entry count"
+    assert len(sub_types) == len(dates), "noc_submission_type and noc_date must have equal entry count"
+
+    # Chronological ascending order
+    assert dates[0] == "2014-11-12" and dates[1] == "2020-01-29", (
+        f"Expected dates in ascending order, got: {dates}"
+    )
+    assert classes[0] == "New Active Substance (NAS)" and classes[1] == "Admin"
+
+
+def test_nds_plus_snds_history_aligned():
+    """A DIN with one NDS entry and one SNDS supplement gets both in aligned history."""
+    from app.enrichment.workbook import build_sheet1
+
+    response = _make_response(
+        dpd_records=[_dpd("02498014")],
+        noc_records=[
+            _noc("02498014", submission_type="NDS",
+                 submission_class="New Active Substance (NAS)", noc_date="2010-06-15"),
+            _noc("02498014",
+                 submission_type="Supplement to a New Drug Submission (SNDS)",
+                 submission_class="Other",
+                 reason_for_supplement="New formulation for subcutaneous administration",
+                 noc_date="2013-02-21"),
+        ],
+    )
+    df = build_sheet1(response)
+    row = df[df["din"] == "02498014"].iloc[0]
+
+    dates = str(row["noc_date"]).split("\n")
+    reasons = str(row["reason_for_supplement"]).split("\n")
+    classes = str(row["submission_class"]).split("\n")
+    sub_types = str(row["noc_submission_type"]).split("\n")
+
+    assert len(dates) == 2
+    assert all(len(lst) == 2 for lst in (reasons, classes, sub_types)), (
+        "All joined NOC columns must have identical entry count (2)"
+    )
+    # NDS entry (older): no supplement reason → empty string placeholder
+    assert dates[0] == "2010-06-15"
+    assert reasons[0] == "", (
+        f"NDS entry should have empty reason_for_supplement placeholder, got: {reasons[0]!r}"
+    )
+    # SNDS entry (newer): supplement reason populated
+    assert dates[1] == "2013-02-21"
+    assert reasons[1] == "New formulation for subcutaneous administration"
+    assert classes[1] == "Other"
+
+
+def test_ands_excluded_from_nds_lineage_history():
+    """A DIN with NDS+SNDS+ANDS entries: ANDS excluded, NDS+SNDS aligned."""
+    from app.enrichment.workbook import build_sheet1
+
+    response = _make_response(
+        dpd_records=[_dpd("02498014")],
+        noc_records=[
+            _noc("02498014", submission_type="NDS",
+                 submission_class="New Active Substance (NAS)", noc_date="2014-01-01"),
+            _noc("02498014",
+                 submission_type="Supplement to a New Drug Submission (SNDS)",
+                 submission_class="Other",
+                 reason_for_supplement="Extended indication",
+                 noc_date="2016-06-01"),
+            _noc("02498014",
+                 submission_type="Abbreviated New Drug Submission (ANDS)",
+                 submission_class="Other", noc_date="2022-03-10"),
+        ],
+    )
+    df = build_sheet1(response)
+    row = df[df["din"] == "02498014"].iloc[0]
+
+    dates = str(row["noc_date"]).split("\n")
+    sub_types = str(row["noc_submission_type"]).split("\n")
+
+    # ANDS entry must be excluded — only NDS + SNDS (2 entries)
+    assert len(dates) == 2, f"Expected 2 NDS-lineage entries (ANDS excluded), got: {dates}"
+    assert not any("ANDS" in s for s in sub_types), (
+        f"ANDS must be excluded from NDS-lineage history: {sub_types}"
+    )
+    # Chronological order
+    assert dates == ["2014-01-01", "2016-06-01"]
+
+
+def test_alignment_stress_all_noc_columns_equal_entry_count():
+    """For every DIN with multi-entry NOC history, all joined columns have identical entry count."""
+    from app.enrichment.workbook import build_sheet1
+
+    # Four DINs with varying history lengths
+    response = _make_response(
+        dpd_records=[_dpd("00000001"), _dpd("00000002"), _dpd("00000003")],
+        noc_records=[
+            # DIN 00000001: 3 NDS entries
+            _noc("00000001", submission_type="NDS", submission_class="NAS", noc_date="2010-01-01"),
+            _noc("00000001", submission_type="NDS", submission_class="Admin", noc_date="2015-01-01"),
+            _noc("00000001",
+                 submission_type="Supplement to a New Drug Submission (SNDS)",
+                 submission_class="Other",
+                 reason_for_supplement="Expanded indication",
+                 noc_date="2018-01-01"),
+            # DIN 00000002: 1 NDS entry
+            _noc("00000002", submission_type="NDS", submission_class="NAS", noc_date="2012-06-01"),
+            # DIN 00000003: ANDS only (single entry)
+            _noc("00000003",
+                 submission_type="Abbreviated New Drug Submission (ANDS)",
+                 submission_class="Other", noc_date="2020-01-01"),
+        ],
+    )
+    df = build_sheet1(response)
+
+    noc_join_cols = ["noc_date", "reason_for_supplement", "submission_class", "noc_submission_type"]
+    for _, row in df.iterrows():
+        din = row["din"]
+        counts = []
+        for col in noc_join_cols:
+            if col not in df.columns:
+                continue
+            val = str(row[col]) if row[col] is not None else ""
+            if val in ("No NOC record", "None", ""):
+                counts.append(1)  # sentinel = single entry
+            else:
+                counts.append(len(val.split("\n")))
+        assert len(set(counts)) <= 1, (
+            f"DIN {din}: joined NOC columns have unequal entry counts: "
+            + str({c: str(row[c])[:40] for c in noc_join_cols if c in df.columns})
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Multi-product side-by-side workbook tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _make_response_for(ingredient: str, dins: list[str], query: str = None) -> "SearchResponse":
+    """Build a minimal SearchResponse for a named ingredient with given DINs."""
+    query = query or ingredient
+    dpd = [
+        DrugRecord(
+            source="DPD",
+            din=din,
+            brand_name=f"BRAND-{din}",
+            company="TestCo",
+            ingredient=ingredient,
+            strength="50 mg",
+            all_ingredients=[ingredient],
+        )
+        for din in dins
+    ]
+    return SearchResponse(
+        metadata=SearchMetadata(
+            query=query,
+            field="ingredient",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        ),
+        sources=[SourceResult(source="DPD", status="ok", records=dpd)],
+    )
+
+
+class TestMultiProductWorkbook:
+    """Tests for build_workbook_multiproduct (side-by-side, color-coded)."""
+
+    def _load_ws(self, xlsx_bytes: bytes, sheet_name: str):
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
+        return wb[sheet_name]
+
+    def _read_row(self, ws, row: int) -> list:
+        return [cell.value for cell in ws[row]]
+
+    def test_single_product_degenerate_valid_xlsx(self):
+        """Single product: output is valid XLSX with two tabs."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        response = _make_response_for("alpelisib", ["02498014", "02498022"])
+        xlsx, s1, s2 = build_workbook_multiproduct([("alpelisib", response)])
+        assert xlsx[:2] == b"PK", "must be a valid ZIP/XLSX"
+        import io, openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx))
+        assert "DPD + NOC + Patents" in wb.sheetnames
+        assert "Generic Submissions" in wb.sheetnames
+
+    def test_key_row_is_row1(self):
+        """Row 1 starts with 'PRODUCT KEY:' and has one entry per product."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        r1 = _make_response_for("alpelisib", ["02498014"])
+        r2 = _make_response_for("apremilast", ["02368975", "02369000"])
+        xlsx, _, _ = build_workbook_multiproduct([("alpelisib", r1), ("apremilast", r2)])
+        ws = self._load_ws(xlsx, "DPD + NOC + Patents")
+        row1 = self._read_row(ws, 1)
+        assert row1[0] == "PRODUCT KEY:", f"A1 must be 'PRODUCT KEY:', got {row1[0]!r}"
+        assert "alpelisib" in row1, "Product 1 name must be in key row"
+        assert "apremilast" in row1, "Product 2 name must be in key row"
+
+    def test_banner_row_is_row2(self):
+        """Row 2 contains product names (banner) above each block."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        r1 = _make_response_for("alpelisib", ["02498014"])
+        r2 = _make_response_for("apremilast", ["02368975"])
+        xlsx, _, _ = build_workbook_multiproduct([("alpelisib", r1), ("apremilast", r2)])
+        ws = self._load_ws(xlsx, "DPD + NOC + Patents")
+        # Banner text includes the product name (uppercased) in the merged cell
+        row2_vals = [str(v or "").upper() for v in self._read_row(ws, 2)]
+        assert any("ALPELISIB" in v for v in row2_vals), "alpelisib banner missing from row 2"
+        assert any("APREMILAST" in v for v in row2_vals), "apremilast banner missing from row 2"
+
+    def test_data_starts_at_row4(self):
+        """Row 3 has column headers; actual DIN data begins at row 4."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        response = _make_response_for("alpelisib", ["02498014", "02498022"])
+        xlsx, _, _ = build_workbook_multiproduct([("alpelisib", response)])
+        ws = self._load_ws(xlsx, "DPD + NOC + Patents")
+        row3 = [v for v in self._read_row(ws, 3) if v is not None]
+        assert "din" in row3, f"'din' header must be in row 3, got: {row3}"
+        # Row 4 should contain a DIN value, not a header name
+        row4 = [v for v in self._read_row(ws, 4) if v is not None]
+        assert row4, "Row 4 must contain data"
+        assert "din" not in row4, "Row 4 must be data, not headers"
+
+    def test_no_cross_contamination_two_products(self):
+        """Each block contains only its own product's DINs — zero bleed-over."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        # Use non-overlapping DINs
+        abrocitinib_dins = ["02517019", "02517027", "02517035"]
+        apremilast_dins  = [f"0236{i:04d}" for i in range(22)]  # 22 DINs
+        r1 = _make_response_for("abrocitinib", abrocitinib_dins)
+        r2 = _make_response_for("apremilast",  apremilast_dins)
+        xlsx, s1, s2 = build_workbook_multiproduct([("abrocitinib", r1), ("apremilast", r2)])
+
+        # The flat combined DataFrame has a 'product' column
+        assert "product" in s1.columns, "combined sheet1 must have 'product' column"
+        s1_abro  = s1[s1["product"] == "abrocitinib"]
+        s1_aprem = s1[s1["product"] == "apremilast"]
+
+        abro_dins_found  = set(s1_abro["din"].dropna().tolist())
+        aprem_dins_found = set(s1_aprem["din"].dropna().tolist())
+
+        # No DIN should appear in both blocks
+        overlap = abro_dins_found & aprem_dins_found
+        assert not overlap, f"Cross-contamination detected — DINs in both blocks: {overlap}"
+
+        # Each block should contain only its own DINs
+        assert abro_dins_found <= set(abrocitinib_dins), "Abrocitinib block has foreign DINs"
+        assert aprem_dins_found <= set(apremilast_dins), "Apremilast block has foreign DINs"
+
+    def test_ragged_heights_handled(self):
+        """Different DIN counts per product don't corrupt the XLSX."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        r1 = _make_response_for("abrocitinib", ["02517019", "02517027", "02517035"])
+        r2 = _make_response_for("apremilast",  [f"0236{i:04d}" for i in range(22)])
+        xlsx, s1, _ = build_workbook_multiproduct([("abrocitinib", r1), ("apremilast", r2)])
+        # Both products' DINs present
+        assert len(s1[s1["product"] == "abrocitinib"]) == 3
+        assert len(s1[s1["product"] == "apremilast"])  == 22
+
+    def test_single_product_same_data_as_build_workbook_with_data(self):
+        """Single-product multiproduct workbook data matches the classic path."""
+        from app.enrichment.workbook import build_sheet1, build_workbook_multiproduct
+        response = _make_response(
+            dpd_records=[_dpd("02498014"), _dpd("02498022")],
+            noc_records=[_noc("02498014"), _noc("02498022")],
+        )
+        _, s1_multi, _ = build_workbook_multiproduct([("alpelisib", response)])
+        s1_single = build_sheet1(response)
+
+        # Combined df has extra 'product' column — drop it for comparison
+        s1_multi_cmp = s1_multi.drop(columns=["product"]).reset_index(drop=True)
+        s1_single_cmp = s1_single.reset_index(drop=True)
+
+        assert list(s1_multi_cmp.columns) == list(s1_single_cmp.columns), (
+            "Single-product multi path must produce same columns as build_sheet1"
+        )
+        assert len(s1_multi_cmp) == len(s1_single_cmp), (
+            "Single-product multi path must produce same row count"
+        )
+        import math
+        for col in s1_single_cmp.columns:
+            for r_idx, (v_multi, v_single) in enumerate(
+                zip(s1_multi_cmp[col], s1_single_cmp[col])
+            ):
+                # NaN != NaN in Python; treat both-NaN as equal
+                both_nan = (
+                    (v_multi is None or (isinstance(v_multi, float) and math.isnan(v_multi)))
+                    and
+                    (v_single is None or (isinstance(v_single, float) and math.isnan(v_single)))
+                )
+                if not both_nan:
+                    assert v_multi == v_single, (
+                        f"Column {col!r} row {r_idx}: multi={v_multi!r} vs single={v_single!r}"
+                    )
+
+    def test_both_tabs_present_and_color_matched(self):
+        """Both tabs have the same products with matching colors."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        r1 = _make_response_for("alpelisib", ["02498014"])
+        r2 = _make_response_for("apremilast", ["02368975"])
+        xlsx, _, _ = build_workbook_multiproduct([("alpelisib", r1), ("apremilast", r2)])
+        import io, openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx), data_only=True)
+        assert "DPD + NOC + Patents" in wb.sheetnames
+        assert "Generic Submissions" in wb.sheetnames
+
+        # Check key row exists on both tabs
+        for sheet_name in ["DPD + NOC + Patents", "Generic Submissions"]:
+            ws = wb[sheet_name]
+            row1 = [ws.cell(1, c).value for c in range(1, 5)]
+            assert row1[0] == "PRODUCT KEY:", (
+                f"Sheet {sheet_name!r}: row 1 must start with 'PRODUCT KEY:'"
+            )
+
+        # Same product name colors on both tabs (cell B1 fill color)
+        ws1 = wb["DPD + NOC + Patents"]
+        ws2 = wb["Generic Submissions"]
+        fill1 = ws1.cell(1, 2).fill.fgColor.rgb if ws1.cell(1, 2).fill else None
+        fill2 = ws2.cell(1, 2).fill.fgColor.rgb if ws2.cell(1, 2).fill else None
+        assert fill1 == fill2, (
+            f"Product 1 color must match across tabs: tab1={fill1} tab2={fill2}"
+        )
+
+    def test_four_products_palette_cycles(self):
+        """Four products each get a distinct color; the key has four entries."""
+        from app.enrichment.workbook import build_workbook_multiproduct, _BLOCK_COLORS
+        products_data = [
+            ("alpelisib",   _make_response_for("alpelisib",   ["02498014"])),
+            ("apremilast",  _make_response_for("apremilast",  ["02368975"])),
+            ("abrocitinib", _make_response_for("abrocitinib", ["02517019"])),
+            ("pembrolizumab", _make_response_for("pembrolizumab", ["02449110"])),
+        ]
+        xlsx, _, _ = build_workbook_multiproduct(products_data)
+        import io, openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx), data_only=True)
+        ws = wb["DPD + NOC + Patents"]
+        row1 = [ws.cell(1, c).value for c in range(1, 10)]
+        product_names = [v for v in row1 if v and v != "PRODUCT KEY:"]
+        assert len(product_names) == 4, f"Expected 4 products in key row, got: {product_names}"
+
+    def test_spacer_column_between_blocks(self):
+        """There is at least one empty (spacer) column between adjacent blocks."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        r1 = _make_response_for("alpelisib", ["02498014"])
+        r2 = _make_response_for("apremilast", ["02368975"])
+        xlsx, _, _ = build_workbook_multiproduct([("alpelisib", r1), ("apremilast", r2)])
+        import io, openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx), data_only=True)
+        ws = wb["DPD + NOC + Patents"]
+        # In row 3 (headers), find the first None after a non-None — that's the spacer
+        header_row = [ws.cell(3, c).value for c in range(1, 200) if c <= ws.max_column]
+        none_positions = [i for i, v in enumerate(header_row) if v is None]
+        assert none_positions, "No spacer column found between blocks in header row"
+
+    def test_sheet2_same_products_same_colors(self):
+        """Generic Submissions tab has both products with the same key as Tab 1."""
+        from app.enrichment.workbook import build_workbook_multiproduct
+        r1 = _make_response_for("alpelisib", ["02498014"])
+        r2 = _make_response_for("apremilast", ["02368975"])
+        xlsx, _, s2 = build_workbook_multiproduct([("alpelisib", r1), ("apremilast", r2)])
+        import io, openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx), data_only=True)
+        ws2 = wb["Generic Submissions"]
+        row1 = [ws2.cell(1, c).value for c in range(1, 10)]
+        assert row1[0] == "PRODUCT KEY:", "Generic Submissions tab must have key row"
+        assert "alpelisib" in row1
+        assert "apremilast" in row1

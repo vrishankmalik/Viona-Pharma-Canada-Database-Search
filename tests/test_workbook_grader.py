@@ -18,18 +18,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from grade_workbook import (
     # sentinels / predicates
     NOT_IN_PM, NO_PM_AVAILABLE, NEEDS_OCR, PH_SOLUBILITY_ONLY, NO_NOC_RECORD,
-    NA_UNCOATED, _is_sentinel, _is_real, _is_no_pm,
+    _is_sentinel, _is_real, _is_no_pm,
     # fuzzy helper
     _fuzzy_contains,
     # stage detection
     detect_stages,
     # Family 1 helpers
-    check_excipient_field,
+    check_nonmedicinal_ingredients,
     check_pack_style,
     check_pack_size,
     check_size_mm,
     check_ph,
-    check_preservatives,
     check_colour,
     check_shape,
     check_noc_consistency,
@@ -112,35 +111,33 @@ class TestFuzzyContains:
         assert not found
 
 
-# ─── check_excipient_field ────────────────────────────────────────────────────
+# ─── check_nonmedicinal_ingredients ─────────────────────────────────────────
 
-class TestCheckExcipientField:
-    def test_clean_excipient_no_findings(self):
-        assert check_excipient_field("12345678", "excipients_core",
-                                     "microcrystalline cellulose, stearic acid") == []
+class TestCheckNonmedicinalIngredients:
+    def test_clean_value_no_findings(self):
+        assert check_nonmedicinal_ingredients(
+            "12345678", "microcrystalline cellulose, magnesium stearate") == []
 
     def test_sentinel_no_findings(self):
-        assert check_excipient_field("12345678", "excipients_core", NOT_IN_PM) == []
+        assert check_nonmedicinal_ingredients("12345678", NOT_IN_PM) == []
 
-    def test_debossed_flagged(self):
-        findings = check_excipient_field("12345678", "excipients_core",
-                                         "White debossed tablets")
-        assert any(f.check_id == "F1_EXCIPIENT_POISON" for f in findings)
+    def test_heading_fragment_colon_flagged(self):
+        findings = check_nonmedicinal_ingredients(
+            "12345678", "Non-Medicinal Ingredients:")
+        assert any(f.check_id == "F1_NM_HEADING_FRAG" for f in findings)
 
-    def test_administration_form_flagged(self):
-        findings = check_excipient_field("12345678", "excipients_core",
-                                         "Administration Form/Strength")
-        assert any(f.check_id == "F1_EXCIPIENT_POISON" for f in findings)
+    def test_trailing_colon_flagged(self):
+        findings = check_nonmedicinal_ingredients(
+            "12345678", "Core tablets: cellulose, stearate Coating:")
+        assert any(f.check_id == "F1_NM_HEADING_FRAG" for f in findings)
 
-    def test_heading_fragment_colon(self):
-        findings = check_excipient_field("12345678", "excipients_core",
-                                         "Non-Medicinal Ingredients:")
-        assert any(f.check_id == "F1_EXCIPIENT_HEADING_FRAG" for f in findings)
+    def test_too_short_warns(self):
+        findings = check_nonmedicinal_ingredients("12345678", "lac")
+        assert any(f.check_id == "F1_NM_TOO_SHORT" and f.severity == "WARN"
+                   for f in findings)
 
-    def test_severity_is_error(self):
-        findings = check_excipient_field("12345678", "excipients_core",
-                                         "Dosage Form and Strength")
-        assert all(f.severity == "ERROR" for f in findings)
+    def test_none_is_sentinel(self):
+        assert check_nonmedicinal_ingredients("12345678", None) == []
 
 
 # ─── check_pack_style ─────────────────────────────────────────────────────────
@@ -247,27 +244,6 @@ class TestCheckPh:
         assert any(f.check_id in ("F1_PH_FORMAT", "F1_PH_RANGE") for f in findings)
 
 
-# ─── check_preservatives ─────────────────────────────────────────────────────
-
-class TestCheckPreservatives:
-    def test_y_ok(self):
-        assert check_preservatives("12345678", "Y") == []
-
-    def test_n_ok(self):
-        assert check_preservatives("12345678", "N") == []
-
-    def test_sentinel_ok(self):
-        assert check_preservatives("12345678", NOT_IN_PM) == []
-
-    def test_free_text_flagged(self):
-        findings = check_preservatives("12345678", "benzalkonium chloride")
-        assert any(f.check_id == "F1_PRESERVATIVES_VALUE" for f in findings)
-
-    def test_yes_flagged(self):
-        findings = check_preservatives("12345678", "Yes")
-        assert any(f.check_id == "F1_PRESERVATIVES_VALUE" for f in findings)
-
-
 # ─── check_colour ─────────────────────────────────────────────────────────────
 
 class TestCheckColour:
@@ -325,12 +301,14 @@ class TestCheckNocConsistency:
         return {
             "noc_date":              "2020-01-01",
             "noc_submission_type":   sub_type,
+            "submission_class":      "New Active Substance (NAS)",
             "noc_therapeutic_class": "Antineoplastic",
         }
 
     def _no_noc(self) -> dict:
         return {c: NO_NOC_RECORD for c in (
-            "noc_date", "noc_submission_type", "noc_therapeutic_class",
+            "noc_date", "noc_submission_type", "submission_class",
+            "reason_for_supplement", "noc_therapeutic_class",
         )}
 
     def test_all_real_nds_ok(self):
@@ -354,6 +332,7 @@ class TestCheckNocConsistency:
         row = {
             "noc_date":              "2020-01-01",
             "noc_submission_type":   NO_NOC_RECORD,
+            "submission_class":      NO_NOC_RECORD,
             "noc_therapeutic_class": NOT_IN_PM,
         }
         findings = check_noc_consistency("12345678", row)
@@ -361,7 +340,7 @@ class TestCheckNocConsistency:
                    for f in findings)
 
     def test_tclass_missing_is_info_not_error(self):
-        # All 4 core fields populated, therapeutic_class blank → INFO
+        # All core fields populated, therapeutic_class blank → INFO
         row = self._full_noc()
         row["noc_therapeutic_class"] = ""
         findings = check_noc_consistency("12345678", row)
@@ -377,12 +356,61 @@ class TestCheckNocConsistency:
         errors = [f for f in check_noc_consistency("12345678", row) if f.severity == "ERROR"]
         assert not errors
 
-    def test_snds_flagged(self):
+    def test_snds_now_valid(self):
+        """SNDS is NDS-lineage and now valid — must NOT be flagged as an error."""
         findings = check_noc_consistency("12345678", self._full_noc("SNDS"))
-        assert any(f.check_id == "F1_NOC_SUB_TYPE" for f in findings)
+        assert not any(f.check_id == "F1_NOC_SUB_TYPE" for f in findings), (
+            "SNDS is now valid (NDS-lineage history); must not raise F1_NOC_SUB_TYPE"
+        )
+
+    def test_snds_full_text_valid(self):
+        """Full text 'Supplement to a New Drug Submission (SNDS)' is valid."""
+        findings = check_noc_consistency(
+            "12345678",
+            self._full_noc("Supplement to a New Drug Submission (SNDS)"),
+        )
+        assert not any(f.check_id == "F1_NOC_SUB_TYPE" for f in findings)
 
     def test_sands_flagged(self):
+        """SANDS (ANDS-lineage) must still be flagged as an error."""
         findings = check_noc_consistency("12345678", self._full_noc("SANDS"))
+        assert any(f.check_id == "F1_NOC_SUB_TYPE" for f in findings)
+
+    def test_sands_full_text_flagged(self):
+        findings = check_noc_consistency(
+            "12345678",
+            self._full_noc("Supplement to an Abbreviated New Drug Submission (SANDS)"),
+        )
+        assert any(f.check_id == "F1_NOC_SUB_TYPE" for f in findings)
+
+    def test_multi_entry_nds_joined_valid(self):
+        """Multi-entry NDS history joined with newline is valid."""
+        row = self._full_noc("New Drug Submission (NDS)\nNew Drug Submission (NDS)")
+        row["noc_date"] = "2014-11-12\n2020-01-29"
+        row["submission_class"] = "New Active Substance (NAS)\nAdmin"
+        findings = check_noc_consistency("12345678", row)
+        errors = [f for f in findings if f.severity == "ERROR"]
+        assert not errors, f"Multi-entry NDS should be valid: {errors}"
+
+    def test_multi_entry_nds_snds_joined_valid(self):
+        """Multi-entry NDS+SNDS history is valid."""
+        row = {
+            "noc_date":            "2010-06-15\n2013-02-21",
+            "noc_submission_type": "New Drug Submission (NDS)\nSupplement to a New Drug Submission (SNDS)",
+            "submission_class":    "New Active Substance (NAS)\nOther",
+            "reason_for_supplement": "\nNew formulation for subcutaneous administration",
+            "noc_therapeutic_class": "Antineoplastic\nAntineoplastic",
+        }
+        findings = check_noc_consistency("12345678", row)
+        errors = [f for f in findings if f.severity == "ERROR"]
+        assert not errors, f"NDS+SNDS history should be valid: {errors}"
+
+    def test_multi_entry_with_sands_flagged(self):
+        """Any SANDS entry in a multi-entry cell is flagged."""
+        row = self._full_noc(
+            "New Drug Submission (NDS)\nSupplement to an Abbreviated New Drug Submission (SANDS)"
+        )
+        findings = check_noc_consistency("12345678", row)
         assert any(f.check_id == "F1_NOC_SUB_TYPE" for f in findings)
 
 
@@ -442,13 +470,13 @@ class TestCheckColumnNames:
 def _stage_df(**col_vals) -> pd.DataFrame:
     """Build a minimal one-row DataFrame for stage detection tests."""
     defaults: dict = {
-        "din":                 "12345678",
-        "active_ingredient":   "",
-        "excipients_core":     "",
-        "noc_date":            NO_NOC_RECORD,
-        "noc_submission_type": NO_NOC_RECORD,
-        "patent_count":        "0",
-        "data_protection_ends": "",
+        "din":                        "12345678",
+        "active_ingredient":          "",
+        "nonmedicinal_ingredients":   "",
+        "noc_date":                   NO_NOC_RECORD,
+        "noc_submission_type":        NO_NOC_RECORD,
+        "patent_count":               "0",
+        "data_protection_ends":       "",
     }
     defaults.update(col_vals)
     return pd.DataFrame([defaults])
@@ -459,7 +487,7 @@ class TestDetectStages:
         df = _stage_df(
             patent_1_number="2709025",
             active_ingredient="",
-            excipients_core="",
+            nonmedicinal_ingredients="",
         )
         stages = detect_stages(df)
         assert stages["PATENTS"] is True
@@ -469,7 +497,7 @@ class TestDetectStages:
     def test_full_workbook_all_stages(self):
         df = _stage_df(
             active_ingredient="alpelisib",
-            excipients_core="microcrystalline cellulose",
+            nonmedicinal_ingredients="microcrystalline cellulose",
             noc_date="2020-01-01",
             noc_submission_type="NDS",
             patent_1_number="2709025",
@@ -504,13 +532,11 @@ class TestFamily1StageAware:
     def _df(self) -> pd.DataFrame:
         return pd.DataFrame([{
             "din": "12345678",
-            "excipients_core": "Debossed tablet heading:",  # would trigger F1_EXCIPIENT_POISON + HEADING_FRAG
-            "excipients_coating": NOT_IN_PM,
+            "nonmedicinal_ingredients": "Non-Medicinal Ingredients:",  # triggers F1_NM_HEADING_FRAG
             "pack_style": NOT_IN_PM,
             "pack_size": NOT_IN_PM,
             "size_mm": NOT_IN_PM,
             "ph": NOT_IN_PM,
-            "preservatives": NOT_IN_PM,
             "colour": NOT_IN_PM,
             "shape": NOT_IN_PM,
             "noc_date": NO_NOC_RECORD,
@@ -519,18 +545,18 @@ class TestFamily1StageAware:
             "patent_count": 0,
         }])
 
-    def test_labeling_active_flags_excipient_poison(self):
+    def test_labeling_active_flags_nm_heading_frag(self):
         df = self._df()
         findings = run_family1(df, stages={"LABELING": True})
-        assert any(f.check_id == "F1_EXCIPIENT_POISON" for f in findings)
+        assert any(f.check_id == "F1_NM_HEADING_FRAG" for f in findings)
 
-    def test_labeling_absent_skips_excipient_checks(self):
+    def test_labeling_absent_skips_labeling_checks(self):
         df = self._df()
         findings = run_family1(df, stages={"LABELING": False})
         labeling_checks = {
-            "F1_EXCIPIENT_POISON", "F1_EXCIPIENT_HEADING_FRAG", "F1_PACK_STYLE_COLON",
-            "F1_PACK_STYLE_HDR_TEXT", "F1_PACK_STYLE_NO_VOCAB", "F1_PACK_SIZE_CONTAINER",
-            "F1_SIZE_MM_FORMAT", "F1_PH_FORMAT", "F1_PRESERVATIVES_VALUE",
+            "F1_NM_HEADING_FRAG", "F1_NM_TOO_SHORT",
+            "F1_PACK_STYLE_COLON", "F1_PACK_STYLE_HDR_TEXT", "F1_PACK_STYLE_NO_VOCAB",
+            "F1_PACK_SIZE_CONTAINER", "F1_SIZE_MM_FORMAT", "F1_PH_FORMAT",
             "F1_COLOUR_NOVEL", "F1_SHAPE_NOVEL",
         }
         assert not any(f.check_id in labeling_checks for f in findings)
@@ -559,9 +585,7 @@ def _make_df(**kwargs) -> pd.DataFrame:
         "ingredient": "alpelisib",
         "dosage_form": "Tablet",
         "active_ingredient": "alpelisib",
-        "excipients_core": NOT_IN_PM,
-        "excipients_coating": NOT_IN_PM,
-        "preservatives": NOT_IN_PM,
+        "nonmedicinal_ingredients": NOT_IN_PM,
         "ph": NOT_IN_PM,
         "colour": NOT_IN_PM,
         "shape": NOT_IN_PM,
@@ -600,29 +624,29 @@ class TestFamily2Coherence:
 
     def test_pm_mixed_sentinel_error(self):
         df = _make_df(
-            excipients_core="microcrystalline cellulose",
-            excipients_coating=NO_PM_AVAILABLE,
-            preservatives=NO_PM_AVAILABLE,
+            nonmedicinal_ingredients="microcrystalline cellulose",
+            colour=NO_PM_AVAILABLE,
+            shape=NO_PM_AVAILABLE,
         )
         findings = run_family2(df, stages={"LABELING": True})
         assert any(f.check_id == "F2_PM_MIXED_SENTINEL" for f in findings)
 
     def test_pm_mixed_sentinel_skipped_without_labeling(self):
         df = _make_df(
-            excipients_core="microcrystalline cellulose",
-            excipients_coating=NO_PM_AVAILABLE,
+            nonmedicinal_ingredients="microcrystalline cellulose",
+            colour=NO_PM_AVAILABLE,
         )
         findings = run_family2(df, stages={"LABELING": False})
         assert not any(f.check_id == "F2_PM_MIXED_SENTINEL" for f in findings)
 
-    def test_excipient_no_appearance_warn(self):
+    def test_nm_no_appearance_warn(self):
         df = _make_df(
-            excipients_core="microcrystalline cellulose, stearic acid",
+            nonmedicinal_ingredients="microcrystalline cellulose, stearic acid",
             colour=NOT_IN_PM,
             shape=NOT_IN_PM,
         )
         findings = run_family2(df, stages={"LABELING": True})
-        assert any(f.check_id == "F2_EXCIPIENT_NO_APPEARANCE" for f in findings)
+        assert any(f.check_id == "F2_NM_NO_APPEARANCE" for f in findings)
 
     def test_weight_no_size_warn(self):
         df = _make_df(weight="250 mg", size_mm=NOT_IN_PM)
@@ -634,14 +658,6 @@ class TestFamily2Coherence:
         findings = run_family2(df, stages={"LABELING": True})
         assert any(f.check_id == "F2_SIZE_NO_WEIGHT" for f in findings)
 
-    def test_coating_no_core_error(self):
-        df = _make_df(
-            excipients_core=NOT_IN_PM,
-            excipients_coating="hydroxypropyl methylcellulose, titanium dioxide",
-        )
-        findings = run_family2(df, stages={"LABELING": True})
-        assert any(f.check_id == "F2_COATING_NO_CORE" for f in findings)
-
     def test_dp_past_date_error(self):
         df = _make_df(data_protection_ends="2010-01-01")
         findings = run_family2(df)
@@ -652,15 +668,6 @@ class TestFamily2Coherence:
         df = _make_df(data_protection_ends=future)
         findings = run_family2(df)
         assert not any(f.check_id == "F2_DP_PAST_DATE" for f in findings)
-
-    def test_liquid_no_pres_no_ph_warn(self):
-        df = _make_df(
-            dosage_form="Solution for injection",
-            preservatives="N",
-            ph=NOT_IN_PM,
-        )
-        findings = run_family2(df, stages={"LABELING": True})
-        assert any(f.check_id == "F2_LIQUID_NO_PH" for f in findings)
 
     def test_dp_past_date_fires_even_without_labeling(self):
         # DP check is not gated on LABELING stage

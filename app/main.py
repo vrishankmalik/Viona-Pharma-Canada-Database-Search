@@ -157,22 +157,46 @@ async def export(
 # ── Async export: start / stream / result ─────────────────────────────────────
 
 class ExportStartRequest(BaseModel):
-    q: str
+    q: str = ""                  # single-query backward compat
+    queries: list[str] = []      # multi-product list (preferred)
     field: str = "ingredient"
     allow_partial: bool = False
     enable_ocr: bool = True
     enable_llm: bool = True
 
 
+def _resolve_queries(req: ExportStartRequest) -> list[str]:
+    """Return deduplicated, non-empty list of queries (case-insensitive dedup, order preserved)."""
+    raw = req.queries if req.queries else ([req.q.strip()] if req.q.strip() else [])
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in raw:
+        q = q.strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            out.append(q)
+    return out
+
+
 @app.post("/export/start")
 async def export_start(req: ExportStartRequest) -> dict:
-    """Create a background export job and return its job_id immediately."""
+    """Create a background export job and return its job_id immediately.
+
+    Accepts either ``q`` (single ingredient, backward compat) or ``queries``
+    (list of ingredients for a multi-product side-by-side workbook).
+    Exact duplicates (case-insensitive) are silently deduplicated; the
+    deduplicated list is returned so the caller knows what was accepted.
+    Input order is preserved — block order in the workbook matches entry order.
+    """
+    qs = _resolve_queries(req)
+    if not qs:
+        raise HTTPException(400, "No query provided — set q or queries")
     job_id = uuid.uuid4().hex
-    job = create_job(job_id, req.q.strip(), req.field)
+    job = create_job(job_id, qs[0], req.field, queries=qs)
     asyncio.create_task(
         run_export_job(job, req.allow_partial, req.enable_ocr, req.enable_llm)
     )
-    return {"job_id": job_id}
+    return {"job_id": job_id, "queries": qs}
 
 
 @app.get("/export/stream/{job_id}")
@@ -236,7 +260,11 @@ async def export_result(job_id: str) -> FileResponse:
         raise HTTPException(404, "Job not found")
     if job.status != "complete" or not job.result_path:
         raise HTTPException(409, f"Job not complete (status={job.status})")
-    filename = f"canadian_drugs_{job.query.replace(' ', '_')}_{job.field}.xlsx"
+    qs = job.queries or [job.query]
+    if len(qs) == 1:
+        filename = f"canadian_drugs_{qs[0].replace(' ', '_')}_{job.field}.xlsx"
+    else:
+        filename = f"canadian_drugs_{len(qs)}_products_{job.field}.xlsx"
     return FileResponse(
         path=job.result_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -260,6 +288,7 @@ async def export_data_json(job_id: str) -> dict:
         raise HTTPException(422, f"Job failed: {job.error}")
     return {
         "query": job.query,
+        "queries": job.queries or [job.query],
         "field": job.field,
         "sheet1": {"columns": job.sheet1_columns, "records": job.sheet1_records},
         "sheet2": {"columns": job.sheet2_columns, "records": job.sheet2_records},
@@ -794,8 +823,10 @@ _HTML_UI = """<!DOCTYPE html>
   <div class="search-box">
     <div class="row">
       <div class="field-group" style="flex:1">
-        <label for="query">Search Term</label>
-        <input type="text" id="query" placeholder="e.g. metformin, acetaminophen, Lipitor…" autocomplete="off"/>
+        <label for="query">Ingredients <span id="queryCount" style="font-weight:400;color:var(--muted);font-size:0.72rem">&mdash; one per line or comma-separated; export runs all</span></label>
+        <textarea id="query" rows="3" style="resize:vertical;min-width:300px;font-family:inherit;padding:9px 13px;border:1px solid var(--border);border-radius:3px;font-size:0.92rem;color:var(--text);background:#fff;transition:border-color .15s,box-shadow .15s;outline:none" placeholder="alpelisib&#10;apremilast&#10;abrocitinib&#10;or: alpelisib, apremilast" oninput="updateQueryCount()"></textarea>
+        <div id="queryHint" style="font-size:0.72rem;color:var(--muted);margin-top:3px"></div>
+      </div>
       </div>
       <div class="field-group">
         <label for="field">Search By</label>
@@ -924,6 +955,38 @@ const SOURCE_COLS = {
 let lastResponse = null;
 let currentJobId = null;
 let currentEventSource = null;
+
+// ---- Multi-ingredient query parsing ----
+
+function parseQueries() {
+  const raw = document.getElementById('query').value || '';
+  // Split on newlines, then commas within each segment
+  const parts = raw.split(/[\\n\\r]+/).flatMap(line => line.split(','));
+  const seen = new Set();
+  const result = [];
+  for (const p of parts) {
+    const trimmed = p.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(trimmed);
+    }
+  }
+  return result;
+}
+
+function updateQueryCount() {
+  const qs = parseQueries();
+  const hint = document.getElementById('queryHint');
+  if (qs.length === 0) {
+    hint.textContent = '';
+  } else if (qs.length === 1) {
+    hint.textContent = `1 ingredient — Search previews it; Export runs it.`;
+  } else {
+    hint.textContent = `${qs.length} ingredients: ${qs.map(q => '“' + q + '”').join(', ')} — Search previews the first; Export runs all side-by-side.`;
+  }
+}
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -1092,10 +1155,17 @@ function switchTab(name) {
 }
 
 async function doSearch() {
-  const q = document.getElementById('query').value.trim();
+  const queries = parseQueries();
+  if (!queries.length) { alert('Please enter at least one ingredient.'); return; }
+  // Search previews the FIRST ingredient; multi-product export runs all.
+  const q = queries[0];
   const field = document.getElementById('field').value;
   const summary = document.getElementById('summary').checked;
-  if (!q) { alert('Please enter a search term.'); return; }
+  if (queries.length > 1) {
+    // Show a brief notice that only the first is being previewed
+    document.getElementById('queryHint').innerHTML =
+      `<span style="color:var(--warn)">Previewing <strong>"${escHtml(q)}"</strong> only &mdash; Export will run all ${queries.length} ingredients side-by-side.</span>`;
+  }
 
   document.getElementById('searchBtn').disabled = true;
   document.getElementById('exportBtn').disabled = true;
@@ -1181,9 +1251,9 @@ function _handleExportEvent(data) {
 }
 
 async function doExport() {
-  const q = document.getElementById('query').value.trim();
+  const queries = parseQueries();
+  if (!queries.length) return;
   const field = document.getElementById('field').value;
-  if (!q) return;
 
   const enableOcr = document.getElementById('enableOcr').checked;
   const enableLlm = document.getElementById('enableLlm').checked;
@@ -1195,7 +1265,10 @@ async function doExport() {
   document.getElementById('exportLog').innerHTML = '';
   document.getElementById('progressFill').style.width = '0%';
   document.getElementById('progressFill').classList.remove('error');
-  document.getElementById('exportStageLabel').textContent = 'Starting export…';
+  const label = queries.length === 1
+    ? `Exporting "${queries[0]}"…`
+    : `Exporting ${queries.length} ingredients side-by-side…`;
+  document.getElementById('exportStageLabel').textContent = label;
   document.getElementById('exportStats').textContent = '';
 
   _closeExport();
@@ -1206,7 +1279,7 @@ async function doExport() {
     const resp = await fetch('/export/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q, field, allow_partial: false, enable_ocr: enableOcr, enable_llm: enableLlm }),
+      body: JSON.stringify({ queries, field, allow_partial: false, enable_ocr: enableOcr, enable_llm: enableLlm }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -1244,8 +1317,9 @@ async function doExport() {
   };
 }
 
+// Ctrl+Enter (or Cmd+Enter) submits search from the textarea
 document.getElementById('query').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doSearch();
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) doSearch();
 });
 
 // ---- Dashboard: consume exact XLSX dataset from job snapshot (no re-scraping) ----
@@ -1317,17 +1391,19 @@ async function _loadDashboard(jobId) {
     document.getElementById('kpiRow').innerHTML = _kpiCards(s1.records, s1.columns);
 
     // Canary comparison log
+    const qs = data.queries || [data.query];
+    const queryStr = qs.length === 1 ? `"${data.query}"` : `${qs.length} products: ${qs.map(q => '"' + q + '"').join(', ')}`;
     const canary = [
       `✓ Dashboard loaded from job snapshot — NO new outbound requests`,
       `  Sheet 1: ${s1.records.length} rows × ${s1.columns.length} columns`,
       `  Sheet 2: ${s2.records.length} rows × ${s2.columns.length} columns`,
-      `  Query: "${data.query}" by ${data.field}`,
+      `  ${queryStr} by ${data.field}`,
       `  Columns: ${s1.columns.join(', ')}`,
     ].join('\\n');
     document.getElementById('canaryBox').textContent = canary;
 
     document.getElementById('dashMeta').textContent =
-      `Job ${jobId.slice(0,8)}… · "${data.query}" by ${data.field}`;
+      `Job ${jobId.slice(0,8)}… · ${queryStr} by ${data.field}`;
 
     // Render tables
     document.getElementById('dashSheet1').innerHTML = _dashTable(s1.columns, s1.records);

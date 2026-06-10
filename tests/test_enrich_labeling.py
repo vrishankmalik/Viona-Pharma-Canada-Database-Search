@@ -2,11 +2,10 @@
 
 Golden accuracy test — alpelisib / PIQRAY monograph (human-verified expected values):
   - active = alpelisib
-  - excipients core = hypromellose, magnesium stearate, mannitol, microcrystalline cellulose,
-                      sodium starch glycolate
-  - excipients coating = hypromellose, iron oxide black, iron oxide red, polyethylene glycol,
-                         talc, titanium dioxide
-  - preservatives = Not stated
+  - nonmedicinal_ingredients = verbatim copy of the Non-Medicinal Ingredients section:
+      "Core tablets: hypromellose, magnesium stearate, mannitol, microcrystalline
+       cellulose, sodium starch glycolate Coating: hypromellose, iron oxide black,
+       iron oxide red, polyethylene glycol, talc, titanium dioxide"
   - pack_style contains "aluminium PVC/PCTFE blisters"
   - colour 50 mg = light pink   (150 mg = pale red,  200 mg = light red)
   - shape 50 mg = round         (150 mg = ovaloid,   200 mg = ovaloid)
@@ -64,39 +63,33 @@ class TestPiqrayGolden:
         # Either "alpelisib" is extracted or "Not stated" is correct
         assert ai in ("alpelisib", NOT_STATED), f"Unexpected active_ingredient: {ai!r}"
 
-    # ── excipients ────────────────────────────────────────────────────────────
+    # ── nonmedicinal_ingredients ──────────────────────────────────────────────
 
-    def test_excipients_core_contains_all_expected(self):
+    # Golden expected value — verbatim text from the PIQRAY fixture (page 6).
+    # Both "Core tablets:" and "Coating:" sub-labels and their ingredient lists
+    # are joined into one string exactly as they appear in the PDF text layer.
+    _PIQRAY_NM_EXPECTED = (
+        "Core tablets: hypromellose, magnesium stearate, mannitol, microcrystalline cellulose,"
+        " sodium starch glycolate"
+        " Coating: hypromellose, iron oxide black, iron oxide red,"
+        " polyethylene glycol, talc, titanium dioxide"
+    )
+
+    def test_nonmedicinal_ingredients_verbatim(self):
+        """nonmedicinal_ingredients must be an exact verbatim copy of the PM section."""
         from app.enrichment.labeling import NOT_STATED
-        core = self.row_50["excipients_core"]
-        assert core != NOT_STATED, "Core excipients should be extracted"
-        expected_core = [
-            "hypromellose", "magnesium stearate", "mannitol",
-            "microcrystalline cellulose", "sodium starch glycolate",
-        ]
-        core_lower = core.lower()
-        for exc in expected_core:
-            assert exc in core_lower, f"Expected '{exc}' in core excipients, got: {core!r}"
-
-    def test_excipients_coating_contains_all_expected(self):
-        from app.enrichment.labeling import NOT_STATED
-        coating = self.row_50["excipients_coating"]
-        assert coating != NOT_STATED, "Coating excipients should be extracted"
-        expected_coating = [
-            "hypromellose", "iron oxide black", "iron oxide red",
-            "polyethylene glycol", "talc", "titanium dioxide",
-        ]
-        coating_lower = coating.lower()
-        for exc in expected_coating:
-            assert exc in coating_lower, f"Expected '{exc}' in coating, got: {coating!r}"
-
-    # ── preservatives ─────────────────────────────────────────────────────────
-
-    def test_preservatives_is_N(self):
-        # PIQRAY has a non-medicinal ingredient list with no known preservatives → "N"
-        assert self.row_50["preservatives"] == "N", (
-            f"Expected 'N' (composition list found, no preservatives), got: {self.row_50['preservatives']!r}"
+        nm = self.row_50["nonmedicinal_ingredients"]
+        assert nm != NOT_STATED, "nonmedicinal_ingredients should be extracted for PIQRAY"
+        assert nm == self._PIQRAY_NM_EXPECTED, (
+            f"nonmedicinal_ingredients verbatim mismatch.\n"
+            f"  expected: {self._PIQRAY_NM_EXPECTED!r}\n"
+            f"  got:      {nm!r}"
         )
+
+    def test_nonmedicinal_ingredients_same_across_strengths(self):
+        """All three strength rows share one monograph → same nonmedicinal_ingredients value."""
+        assert self.row_50["nonmedicinal_ingredients"] == self.row_150["nonmedicinal_ingredients"]
+        assert self.row_50["nonmedicinal_ingredients"] == self.row_200["nonmedicinal_ingredients"]
 
     # ── packaging ────────────────────────────────────────────────────────────
 
@@ -183,9 +176,7 @@ class TestPiqrayGolden:
         """
         from app.enrichment.labeling import NOT_STATED, NEEDS_OCR, PH_SOLUBILITY_ONLY
 
-        # Y/N preservatives classification doesn't require a page citation (it's a
-        # derived boolean, not a verbatim excerpt); also skip existing sentinels.
-        sentinel_values = {NOT_STATED, NEEDS_OCR, PH_SOLUBILITY_ONLY, "Y", "N"}
+        sentinel_values = {NOT_STATED, NEEDS_OCR, PH_SOLUBILITY_ONLY}
         text_by_page = {pg: txt for pg, txt in self.pages}
 
         for row_name, row in [("50mg", self.row_50), ("150mg", self.row_150), ("200mg", self.row_200)]:
@@ -228,7 +219,7 @@ def test_scanned_pdf_thin_pages_return_not_in_pm():
         "needs_ocr is set by enrich_labeling (the caller), not parse_labeling_fields"
     )
     # Stage-3 fields: sections not found in thin text → NOT_IN_PM, never NEEDS_OCR sentinel
-    for field in ("excipients_core", "excipients_coating", "preservatives",
+    for field in ("nonmedicinal_ingredients",
                   "colour", "shape", "size_mm", "weight", "ph"):
         assert row[field] == NOT_IN_PM, (
             f"Expected {field}={NOT_IN_PM!r} for empty pages, got {row[field]!r}"

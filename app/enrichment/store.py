@@ -38,34 +38,30 @@ CREATE TABLE IF NOT EXISTS patent_discrepancies (
 );
 
 CREATE TABLE IF NOT EXISTS labeling (
-    din                     TEXT PRIMARY KEY,
-    drug_code               INTEGER,
-    pdf_url                 TEXT,
-    active_ingredient       TEXT,
-    active_ingredient_page  INTEGER,
-    excipients_core         TEXT,
-    excipients_core_page    INTEGER,
-    excipients_coating      TEXT,
-    excipients_coating_page INTEGER,
-    preservatives           TEXT,
-    preservatives_page      INTEGER,
-    pack_size               TEXT,
-    pack_size_page          INTEGER,
-    pack_style              TEXT,
-    pack_style_page         INTEGER,
-    colour                  TEXT,
-    colour_page             INTEGER,
-    shape                   TEXT,
-    shape_page              INTEGER,
-    size_mm                 TEXT,
-    size_mm_page            INTEGER,
-    weight                  TEXT,
-    weight_page             INTEGER,
-    ph                      TEXT,
-    ph_page                 INTEGER,
-    needs_ocr               INTEGER NOT NULL DEFAULT 0,
-    has_unverified          INTEGER NOT NULL DEFAULT 0,
-    fetched_at              REAL NOT NULL
+    din                             TEXT PRIMARY KEY,
+    drug_code                       INTEGER,
+    pdf_url                         TEXT,
+    active_ingredient               TEXT,
+    active_ingredient_page          INTEGER,
+    nonmedicinal_ingredients        TEXT,
+    nonmedicinal_ingredients_page   INTEGER,
+    pack_size                       TEXT,
+    pack_size_page                  INTEGER,
+    pack_style                      TEXT,
+    pack_style_page                 INTEGER,
+    colour                          TEXT,
+    colour_page                     INTEGER,
+    shape                           TEXT,
+    shape_page                      INTEGER,
+    size_mm                         TEXT,
+    size_mm_page                    INTEGER,
+    weight                          TEXT,
+    weight_page                     INTEGER,
+    ph                              TEXT,
+    ph_page                         INTEGER,
+    needs_ocr                       INTEGER NOT NULL DEFAULT 0,
+    has_unverified                  INTEGER NOT NULL DEFAULT 0,
+    fetched_at                      REAL NOT NULL
 );
 """
 
@@ -77,6 +73,15 @@ def _open() -> sqlite3.Connection:
     conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(_DDL)
+    # Migrate existing labeling tables: add new columns, ignore if already present.
+    for col_def in (
+        "nonmedicinal_ingredients TEXT",
+        "nonmedicinal_ingredients_page INTEGER",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE labeling ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
@@ -146,9 +151,7 @@ def get_discrepancies() -> list[dict]:
 _LABELING_COLS = (
     "din", "drug_code", "pdf_url",
     "active_ingredient", "active_ingredient_page",
-    "excipients_core", "excipients_core_page",
-    "excipients_coating", "excipients_coating_page",
-    "preservatives", "preservatives_page",
+    "nonmedicinal_ingredients", "nonmedicinal_ingredients_page",
     "pack_size", "pack_size_page",
     "pack_style", "pack_style_page",
     "colour", "colour_page",

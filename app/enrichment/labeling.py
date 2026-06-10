@@ -10,11 +10,12 @@ Stage 2 (this file, top half): DPD API + info page
 
 Stage 3 (this file, bottom half): PDF extraction
   Fields extracted ONLY from the PDF:
-    excipients_core, excipients_coating, preservatives,
+    nonmedicinal_ingredients (verbatim copy from PM),
     ph, colour, shape, size_mm, weight
   Per-strength matching: use the DIN's strength to scope §6 Description block.
   Section location by keyword → only that section passed to Ollama or regex.
-  If Ollama (llama3) is available it is preferred; regex is the fallback.
+  If Ollama (llama3) is available it is preferred for appearance; regex is used
+  for nonmedicinal_ingredients (verbatim copy must not go through LLM).
 
   Scanned PDFs: OCR'd page-by-page via pdf2image + pytesseract (ENABLE_OCR=1 default).
   OCR text is disk-cached by PDF URL (7-day TTL). The is_scanned() guard no longer
@@ -112,8 +113,8 @@ PH_SOLUBILITY_ONLY = "Not stated (pH-dependent solubility only)"
 _MIN_TEXT_CHARS = 50
 
 _LABELING_FIELDS = (
-    "active_ingredient", "excipients_core", "excipients_coating",
-    "preservatives", "pack_size", "pack_style",
+    "active_ingredient", "nonmedicinal_ingredients",
+    "pack_size", "pack_style",
     "colour", "shape", "size_mm", "weight", "ph",
 )
 
@@ -525,6 +526,36 @@ def _ocr_single_page(pdf_bytes: bytes, page_num: int) -> Optional[str]:
         return None
 
 
+def _extract_nm_from_table_column(page) -> Optional[str]:
+    """Extract Non-medicinal Ingredients from a pdfplumber table column header layout.
+
+    Some Canadian PM PDFs present §6 as a multi-column table:
+      | Route | Dosage Form / Strength | Non-medicinal Ingredients |
+    pdfplumber's extract_text() interleaves the columns, producing garbage.
+    This function finds the NM column and returns the clean cell content.
+    Returns None if no NM column is found in any table on the page.
+    """
+    try:
+        tables = page.extract_tables()
+        for table in tables:
+            if not table or len(table) < 2:
+                continue
+            header_row = table[0]
+            for col_idx, header_cell in enumerate(header_row):
+                if header_cell and _NM_HEADING_RE.search(str(header_cell)):
+                    parts: list[str] = []
+                    for data_row in table[1:]:
+                        if col_idx < len(data_row) and data_row[col_idx]:
+                            cell = str(data_row[col_idx]).replace("\n", " ").strip()
+                            if cell:
+                                parts.append(cell)
+                    if parts:
+                        return "; ".join(parts)
+    except Exception:
+        pass
+    return None
+
+
 def _extract_text_with_ocr(
     pdf_bytes: bytes,
     cache_key: str,
@@ -555,6 +586,17 @@ def _extract_text_with_ocr(
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             raw_text = page.extract_text() or ""
+            # For pages where NM ingredients appear as a table column (e.g. Health Canada
+            # 3-column composition tables), pdfplumber's text extraction interleaves columns
+            # and produces garbage.  Replace the bare column-header occurrence in-place with
+            # the inline form so it lands inside the §6 section text (not after §7).
+            nm_from_table = _extract_nm_from_table_column(page)
+            if nm_from_table:
+                raw_text = _NM_HEADING_RE.sub(
+                    f"Non-Medicinal Ingredients: {nm_from_table}",
+                    raw_text,
+                    count=1,
+                )
             used_ocr = False
 
             if len(raw_text) < _MIN_TEXT_CHARS and enable_ocr:
@@ -694,24 +736,7 @@ async def _query_ollama(section_text: str, page_num: int, field_group: str) -> d
       - Copy verbatim; do NOT invent or paraphrase
       - found=false + value=null means "searched, absent" — valid
     """
-    if field_group == "excipients":
-        fields_desc = {
-            "excipients_core": (
-                "Non-medicinal / inactive ingredients in the tablet CORE only. "
-                "Do NOT include coating ingredients. Typical labels: "
-                "'Non-medicinal ingredients', 'Core tablet', 'Tablet core', 'Inactive ingredients'."
-            ),
-            "excipients_coating": (
-                "Ingredients in the FILM COAT or COATING ONLY. "
-                "Only populate if there is an explicit 'Film coat', 'Film coating', or 'Coating:' subsection. "
-                "If no coating subsection exists, set found=false."
-            ),
-            "preservatives": (
-                "Preservative(s) specifically listed (e.g. benzalkonium chloride, methylparaben). "
-                "Return null if none are listed; set found=false if no preservative section."
-            ),
-        }
-    elif field_group == "appearance":
+    if field_group == "appearance":
         fields_desc = {
             "colour": "Colour(s) of the tablet/capsule/product (e.g. 'white', 'light blue').",
             "shape": "Shape (e.g. 'round', 'oval', 'oblong', 'biconvex'). Null if absent.",
@@ -885,63 +910,80 @@ def _extract_active_ingredient_regex(s6_text: str) -> Optional[str]:
     return _find_in_section(s6_text, patterns)
 
 
-_EXCIPIENT_EXTRA_REJECT = re.compile(
-    r"debossed|[Aa]dministration\s+[Ff]orm|[Ff]orm\s*/\s*[Ss]trength|"
-    r"[Aa]dministration\s+[Ss]trength|tablets?\s+with\s+['\"]|"
-    r"[Ss]trength\s+and\s+[Dd]osage|[Dd]osage\s+[Ff]orm",
+# Non-medicinal ingredients heading — flexible matching for the variants used in Canadian PMs:
+#   "Non-medicinal Ingredients", "Nonmedicinal Ingredients",
+#   "Clinically Relevant Non-medicinal Ingredients", "Clinically Relevant Nonmedicinal Ingredients",
+#   "Nonmedical Ingredients"
+_NM_HEADING_RE = re.compile(
+    r"(?:Clinically\s+Relevant\s+)?"
+    r"Non[-\s]?medicinal\s+Ingredients?"
+    r"|Nonmedical\s+Ingredients?",
+    re.IGNORECASE,
+)
+
+# Lines that signal the end of the nonmedicinal-ingredients block.
+# Note: "Coating:" and "Film Coat" are NOT end markers — they are sub-headers
+# within the nonmedicinal list (e.g. "Core tablets: ...\nCoating: ...").
+_NM_END_RE = re.compile(
+    r"^(?:"
+    r"Packaging|Storage|Shelf\s+Life|Description\b|"
+    r"Administration\b|Route\b|"   # table-column residue after in-place NM replacement
+    r"\d+\s+(?:DOSAGE|PHARMACEUTICAL|CLINICAL|NON-CLINICAL|WARNINGS|ADVERSE)"
+    r")",
     re.IGNORECASE,
 )
 
 
-def _extract_excipients_regex(s6_text: str) -> tuple[Optional[str], Optional[str]]:
-    """Return (core_excipients, coating_excipients).
+def _extract_nonmedicinal_ingredients(s6_text: str) -> Optional[str]:
+    """Copy the Non-medicinal Ingredients list verbatim from §6 text.
 
-    Key rules:
-    1. Core: match only known non-medicinal ingredient headers (Core tablets: prefix
-       handled — we strip it to get just the ingredient list).
-    2. Coating: MUST start with 'Film Coat' (two words) or 'Film Coating', or a bare
-       'Coating:' (colon required). 'Coat' alone is rejected (ambiguous dosage headings).
-    3. Hard-reject patterns guard against table-header bleeding (_POISON_PATTERNS) and
-       appearance wording (debossed, Form/Strength, etc.) via _EXCIPIENT_EXTRA_REJECT.
-    4. Uncoated: when core is found but no coating section exists → coating = "N/A (uncoated)".
+    Two layouts are handled, tried in order of priority:
+
+    1. Inline: "Non-medicinal Ingredients: cellulose, stearate, ..."
+       The colon and content appear on the same line as the heading.  This is
+       the cleanest form and is preferred — it's what the table-injection path
+       (see _extract_nm_from_table_column) produces, and is also used by the
+       Consumer Information section in many PMs.
+
+    2. Block: heading alone on one line, content on the next line(s).
+       Used by PIQRAY and similar PMs where §6 has a labeled sub-section.
+
+    Returns text exactly as it appears in the PDF — no normalization.
+    Stops at the first blank line after content, or at a known section header.
     """
-    core_pats = [
-        # "Core tablets:" sub-label — capture only the ingredient list after it
-        r"(?:Non-?[Mm]edicinal\s+[Ii]ngredients?|[Ii]nactive\s+[Ii]ngredients?)"
-        r"\s*[:\-]?\s*(?:[Cc]ore\s+[Tt]ablets?\s*[:\-]\s*)(.+?)"
-        r"(?:\n(?:[A-Z][a-z]{2,}|[A-Z]{3,})\s*[:\n]|\n\n|[Ff]ilm\s+[Cc]oat|[Cc]oating|$)",
-        # Generic non-medicinal ingredients list (no "Core tablets:" prefix)
-        r"(?:Non-?[Mm]edicinal\s+[Ii]ngredients?|[Ii]nactive\s+[Ii]ngredients?|"
-        r"[Cc]ore\s+[Tt]ablet\s+[Ii]ngredients?|[Cc]ore\s+[Ii]ngredients?)"
-        r"\s*[:\-]?\s*(.+?)"
-        r"(?:\n(?:[A-Z][a-z]{2,}|[A-Z]{3,})\s*[:\n]|\n\n|[Ff]ilm\s+[Cc]oat|$)",
-    ]
-    core = _find_in_section(s6_text, core_pats)
-    # Clean "Core tablets:" prefix if it leaked into the captured group
-    if core and re.match(r"^[Cc]ore\s+[Tt]ablets?\s*[:\-]\s*", core):
-        core = re.sub(r"^[Cc]ore\s+[Tt]ablets?\s*[:\-]\s*", "", core).strip()
-    if _is_poisoned(core) or (core and _EXCIPIENT_EXTRA_REJECT.search(core)):
-        logger.warning("excipients_core regex value discarded (poison guard): %r", core)
-        core = None
+    def _collect_after(text_after: str) -> Optional[str]:
+        lines = text_after.split("\n")
+        collected: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if collected:
+                    break
+                continue
+            if collected and _NM_END_RE.match(stripped):
+                break
+            collected.append(stripped)
+        return " ".join(collected).strip() if collected else None
 
-    coat_pats = [
-        # "Film Coat[ing]:" — two-word form, safest
-        r"[Ff]ilm\s+[Cc]oat(?:ing)?\s*[:\-]?\s*(.+?)"
-        r"(?:\n(?:[A-Z][a-z]{2,}|Administration|Strength|Dose|Dosage|Packaging|Storage)\s*[:\n]|\n\n|$)",
-        # Bare "Coating:" (colon required to distinguish from "coat" in dosage phrases)
-        r"(?:^|\n)\s*[Cc]oating\s*:\s*(.+?)"
-        r"(?:\n(?:[A-Z][a-z]{2,}|Administration|Strength|Dose|Dosage|Packaging|Storage)\s*[:\n]|\n\n|$)",
-    ]
-    coating = _find_in_section(s6_text, coat_pats)
-    if _is_poisoned(coating) or (coating and _EXCIPIENT_EXTRA_REJECT.search(coating)):
-        logger.warning("excipients_coating regex value discarded (poison guard): %r", coating)
-        coating = None
+    # Priority 1: inline format — heading immediately followed by ": content"
+    # The colon distinguishes labeled text from a bare table-column header.
+    inline_re = re.compile(
+        r"(?:Clinically\s+Relevant\s+)?Non[-\s]?medicinal\s+Ingredients?\s*:\s*"
+        r"|Nonmedical\s+Ingredients?\s*:\s*",
+        re.IGNORECASE,
+    )
+    for m in inline_re.finditer(s6_text):
+        after = s6_text[m.end():]
+        result = _collect_after(after)
+        if result:
+            return result
 
-    # If the core list was found but no coating sub-section exists, the tablet is uncoated.
-    if core and not coating:
-        coating = "N/A (uncoated)"
-
-    return core, coating
+    # Priority 2: block format — heading on its own line, content below
+    m = _NM_HEADING_RE.search(s6_text)
+    if not m:
+        return None
+    after = re.sub(r"^\s*[:\-]?\s*", "", s6_text[m.end():])
+    return _collect_after(after)
 
 
 _PACK_STYLE_HEADING_REJECT = re.compile(
@@ -994,49 +1036,6 @@ def _extract_pack_style_from_pdf(s6_text: str) -> Optional[str]:
         return label
     return None
 
-
-_KNOWN_PRESERVATIVES_RE = re.compile(
-    r"\b(?:methylparaben|propylparaben|benzyl\s+alcohol|benzalkonium\s+chloride|"
-    r"sodium\s+benzoate|potassium\s+benzoate|benzoic\s+acid|sorbic\s+acid|"
-    r"phenoxyethanol|phenol|cresol|chlorobutanol|thimerosal)\b",
-    re.IGNORECASE,
-)
-
-# Patterns that locate a non-medicinal ingredient list in §6 text
-_NM_INGREDIENT_LIST_RE = re.compile(
-    r"(?:Non-?[Mm]edicinal|[Ii]nactive|[Ee]xcipient)\s*(?:[Ii]ngredients?|[Ee]xcipients?)?"
-    r"\s*[:\-]?\s*"
-    r"(?:Core\s+[Tt]ablets?\s*:\s*)?"  # optional "Core tablets:" prefix
-    r"(.{20,}?)(?:\n\n|Film\s+[Cc]oat|\Z)",
-    re.DOTALL | re.IGNORECASE,
-)
-
-
-def _classify_preservatives(s6_text: str) -> str:
-    """Return 'Y', 'N', or NOT_IN_PM based on the non-medicinal ingredient list.
-
-    'Y'       — a known preservative is present in the found composition list.
-    'N'       — a composition list was found but contains no known preservative.
-    NOT_IN_PM — no composition list found at all.
-    """
-    # First try an explicit "Preservatives:" label
-    explicit = re.search(r"[Pp]reservative[s]?\s*[:\-]\s*(.+?)(?:\n|;|$)", s6_text)
-    if explicit:
-        val = explicit.group(1).strip()
-        if re.search(r"\b(?:none|nil|not applicable|n/a)\b", val, re.IGNORECASE):
-            return "N"
-        if _KNOWN_PRESERVATIVES_RE.search(val):
-            return "Y"
-
-    # Fall back to scanning the whole non-medicinal ingredient list
-    nm_match = _NM_INGREDIENT_LIST_RE.search(s6_text)
-    if not nm_match:
-        return NOT_IN_PM  # no composition info — cannot determine
-
-    ingredient_block = nm_match.group(0)  # includes the header line
-    if _KNOWN_PRESERVATIVES_RE.search(ingredient_block):
-        return "Y"
-    return "N"
 
 
 def _extract_ph_regex(s13_text: str) -> str:
@@ -1108,7 +1107,9 @@ def _extract_appearance_regex(
 # ── §6 / §13 markers ─────────────────────────────────────────────────────────
 
 _S6_MARKERS = [
-    r"^6[\.\s]+DOSAGE FORMS?,?\s*COMPOSITION",
+    # "6 DOSAGE FORMS, COMPOSITION..." or "6. Dosage Forms, Strengths, Composition..."
+    # Negative lookahead (?!.*\.{4,}) rejects TOC entries, which have dot leaders like "..........9"
+    r"^6[\.\s]+DOSAGE FORMS?(?!.*\.{4,}).*COMPOSITION",
     r"^6[\.\s]+PHARMACEUTICAL INFORMATION",
     r"^PART II.*SCIENTIFIC INFORMATION",
 ]
@@ -1134,10 +1135,10 @@ async def parse_labeling_fields_async(
 ) -> dict:
     """Extract Stage 3 label fields from pre-extracted PDF pages.
 
-    Only extracts: excipients_core, excipients_coating, preservatives,
-                   ph, colour, shape, size_mm, weight.
+    Only extracts: nonmedicinal_ingredients, ph, colour, shape, size_mm, weight.
     Does NOT extract: active_ingredient, pack_size, pack_style
                       (those come from Stage 2 / DPD API).
+    nonmedicinal_ingredients is always extracted via regex (verbatim copy, not via LLM).
 
     Scanned / low-text PDFs are handled by the caller (_extract_text_with_ocr)
     before this function is called. This function always attempts extraction
@@ -1165,14 +1166,12 @@ async def parse_labeling_fields_async(
         use_ollama = enable_llm and await _is_ollama_available()
 
     if use_ollama:
-        # --- Ollama path (all three field groups queried in parallel) ---
-        excip_section_text = s6_text
-        nm_match = re.search(
-            r"(?:Non-?[Mm]edicinal|[Ii]nactive|[Ee]xcipient)[^\n]{0,60}\n(.{50,}?)(?=\n\n|\Z)",
-            s6_text, re.DOTALL,
-        )
-        if nm_match:
-            excip_section_text = nm_match.group(0)
+        # --- Ollama path (appearance + ph queried in parallel) ---
+        # nonmedicinal_ingredients is always extracted via regex (verbatim copy must not go
+        # through LLM which may paraphrase or reorder).
+        nm_val = _extract_nonmedicinal_ingredients(s6_text)
+        row["nonmedicinal_ingredients"] = nm_val if nm_val else NOT_IN_PM
+        row["nonmedicinal_ingredients_page"] = s6_page if nm_val else None
 
         appearance_text = (
             f"Product: {_normalize_strength(din_strength)}\n\n{desc_text}"
@@ -1185,13 +1184,11 @@ async def parse_labeling_fields_async(
                 return await _query_ollama(s13_text, s13_page or 1, "ph")
             return {}
 
-        ollama_a, ollama_b, ollama_c = await asyncio.gather(
-            _query_ollama(excip_section_text, s6_page or 1, "excipients"),
+        ollama_b, ollama_c = await asyncio.gather(
             _query_ollama(appearance_text, desc_page or 1, "appearance"),
             _ph_query(),
         )
 
-        _apply_ollama_result(row, ollama_a, ["excipients_core", "excipients_coating", "preservatives"], s6_page)
         _apply_ollama_result(row, ollama_b, ["colour", "shape", "size_mm", "weight"], desc_page)
         if s13_text:
             _apply_ollama_result(row, ollama_c, ["ph"], s13_page)
@@ -1208,15 +1205,9 @@ async def parse_labeling_fields_async(
         row["active_ingredient"] = ai_pdf if ai_pdf else NOT_IN_PM
         row["active_ingredient_page"] = s6_page if ai_pdf else None
 
-        core, coating = _extract_excipients_regex(s6_text)
-        row["excipients_core"] = core if core else NOT_IN_PM
-        row["excipients_core_page"] = s6_page if core else None
-        row["excipients_coating"] = coating if coating else NOT_IN_PM
-        row["excipients_coating_page"] = s6_page if coating else None
-
-        pres = _classify_preservatives(s6_text)
-        row["preservatives"] = pres
-        row["preservatives_page"] = s6_page if pres not in (NOT_IN_PM,) else None
+        nm_val = _extract_nonmedicinal_ingredients(s6_text)
+        row["nonmedicinal_ingredients"] = nm_val if nm_val else NOT_IN_PM
+        row["nonmedicinal_ingredients_page"] = s6_page if nm_val else None
 
         if desc_text:
             norm_strength = _normalize_strength(din_strength) if din_strength else None
