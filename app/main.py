@@ -1,4 +1,4 @@
-"""Canadian Drug Database Aggregator — FastAPI main application."""
+"""Health Canada Database Aggregator — FastAPI main application."""
 from __future__ import annotations
 
 import asyncio
@@ -30,7 +30,7 @@ from app.sources.generic_submissions import search_generic_submissions
 from app.sources.noc import search_noc
 from app.sources.patent_register import search_patent_register
 
-app = FastAPI(title="Canadian Drug Database Aggregator", version="1.0.0")
+app = FastAPI(title="Health Canada Database Aggregator", version="1.0.0")
 
 import pathlib as _pathlib
 _static_dir = _pathlib.Path(__file__).parent / "static"
@@ -311,7 +311,7 @@ _HTML_UI = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Canadian Drug Database — Health Canada</title>
+<title>Health Canada Database Aggregator</title>
 <!--
   Zydus palette (extracted from zydususa.com/wp-content/themes/zydus-pharmaceuticals/css/style_v2.css):
     Purple (primary): #AA55A0
@@ -811,7 +811,7 @@ _HTML_UI = """<!DOCTYPE html>
     <img class="header-logo-zydus" src="/static/zydus_logo.png" alt="Zydus" />
     <div>
       <div class="header-company-name">Zydus &nbsp;&mdash;&nbsp; Dedicated To Life</div>
-      <h1>Canadian Drug Database Aggregator</h1>
+      <h1>Health Canada Database Aggregator</h1>
     </div>
   </div>
   <p>Simultaneous search across DPD &middot; Generic Submissions Under Review &middot; Notice of Compliance &middot; Patent Register</p>

@@ -1,4 +1,4 @@
-# Canadian Drug Database Aggregator
+# Health Canada Database Aggregator
 
 A local web application that searches four Canadian health-product databases simultaneously and returns consolidated results viewable in a web UI or downloadable as XLSX.
 
