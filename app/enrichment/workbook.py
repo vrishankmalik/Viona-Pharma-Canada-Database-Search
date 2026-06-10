@@ -678,29 +678,29 @@ def build_workbook(
 #   E8DAEF  lavender       FDEBD0  peach          D1F2EB  seafoam teal
 #   FDEDEC  light rose     D6EAF8  steel blue
 _BLOCK_COLORS: list[str] = [
-    "D4E6F1",  # sky blue
-    "D5F5E3",  # mint green
-    "FEF9E7",  # cream yellow
-    "E8DAEF",  # lavender
-    "FDEBD0",  # peach
-    "D1F2EB",  # seafoam teal
-    "FDEDEC",  # light rose
-    "D6EAF8",  # steel blue
+    "EDD6EB",  # light purple   (#AA55A0 ~15%)
+    "CCF0F0",  # light teal     (#00A5A5 ~20%)
+    "DDD5EE",  # light deep purple (#3D226E ~20%)
+    "CCE7F2",  # light teal-dark   (#008BAD ~20%)
+    "F3E5F2",  # pale purple
+    "D5F2F2",  # pale teal
+    "E5D8F0",  # lavender purple
+    "C5EAEA",  # seafoam teal
 ]
 
 # Spacer columns written between adjacent product blocks
 _BLOCK_SPACER = 1
 
-# A slightly darker tint of each block color for the banner row (50% darker)
+# Medium tints of Zydus purple/teal for banner rows (black text on these)
 _BLOCK_BANNER_COLORS: list[str] = [
-    "A9CDDF",  # sky blue darker
-    "AAEBC6",  # mint green darker
-    "FDF2CE",  # cream yellow darker
-    "D4B8E4",  # lavender darker
-    "FBD7A1",  # peach darker
-    "A2E5D7",  # seafoam teal darker
-    "FBDBD9",  # light rose darker
-    "AECFF0",  # steel blue darker
+    "D4A8D0",  # medium purple   (#AA55A0 ~50%)
+    "80CECE",  # medium teal     (#00A5A5 ~50%)
+    "9D8AC4",  # medium deep purple (#3D226E ~50%)
+    "7FC4D8",  # medium teal-dark   (#008BAD ~50%)
+    "E0B8DC",  # light-medium purple
+    "99D8D8",  # light-medium teal
+    "C4AADA",  # lavender purple
+    "88CCCC",  # teal variant
 ]
 
 

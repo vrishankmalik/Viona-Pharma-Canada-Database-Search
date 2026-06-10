@@ -314,40 +314,42 @@ _HTML_UI = """<!DOCTYPE html>
 <title>Canadian Drug Database — Health Canada</title>
 <!--
   Zydus palette (extracted from zydususa.com/wp-content/themes/zydus-pharmaceuticals/css/style_v2.css):
-    Primary blue:   #002596
-    Teal accent:    #00586E
-    Dark nav/text:  #303e49
-    Body text:      #333333
-    Muted text:     #58595B
-    Border:         #D1D1D1
-    Card bg:        #FFFFFF
-    Page bg:        #FAFAFA
-    Font (primary): "Exo" (Google Fonts)
-    Font (body):    "Inter", sans-serif
+    Purple (primary): #AA55A0
+    Deep purple:      #3D226E
+    Teal (secondary): #00A5A5
+    Teal dark:        #008BAD
+    Teal deeper:      #00586E
+    Light teal:       #5AC3BE
+    Body text:        #58595B
+    Border:           #D1D1D1
+    Card bg:          #FFFFFF
+    Page bg:          #FAFAFA
+    Font (primary):   "Exo" (Google Fonts)
+    Font (body):      "Inter", sans-serif
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Exo:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
-  /* ── Zydus-aligned design tokens ─────────────────────────────────────── */
+  /* ── Zydus brand design tokens ───────────────────────────────────────── */
   :root {
-    --primary:      #002596;   /* Zydus corporate blue */
-    --primary-dark: #001a6e;   /* hover state */
-    --teal:         #00586E;   /* Zydus teal accent */
-    --teal-dark:    #004255;
-    --nav-bg:       #303e49;   /* dark nav bar */
-    --bg:           #FAFAFA;   /* page background */
+    --primary:      #AA55A0;   /* Zydus purple */
+    --primary-dark: #3D226E;   /* deep purple — hover / nav */
+    --teal:         #00A5A5;   /* Zydus teal */
+    --teal-dark:    #008BAD;   /* teal hover */
+    --nav-bg:       #3D226E;   /* deep purple nav bar */
+    --bg:           #FAFAFA;
     --card:         #FFFFFF;
     --border:       #D1D1D1;
     --text:         #333333;
     --muted:        #58595B;
-    --ok:           #007A5E;
+    --ok:           #00A5A5;
     --warn:         #B45309;
     --err:          #C0392B;
-    --badge-dpd:    #002596;
-    --badge-gen:    #3D226E;
-    --badge-noc:    #00586E;
-    --badge-pr:     #00AF9A;
+    --badge-dpd:    #3D226E;   /* deep purple */
+    --badge-gen:    #AA55A0;   /* purple */
+    --badge-noc:    #00A5A5;   /* teal */
+    --badge-pr:     #008BAD;   /* teal-dark */
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: "Inter", sans-serif; background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
@@ -456,7 +458,7 @@ _HTML_UI = """<!DOCTYPE html>
     border-radius: 4px;
     padding: 22px 24px;
     margin-bottom: 20px;
-    box-shadow: 0 1px 3px rgba(0,37,150,.06);
+    box-shadow: 0 1px 3px rgba(170,85,160,.08);
   }
   .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
   .field-group { display: flex; flex-direction: column; gap: 5px; }
@@ -480,7 +482,7 @@ _HTML_UI = """<!DOCTYPE html>
   }
   input[type=text]:focus, select:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(0,37,150,.12);
+    box-shadow: 0 0 0 3px rgba(170,85,160,.15);
   }
   #query { min-width: 300px; }
 
@@ -642,7 +644,7 @@ _HTML_UI = """<!DOCTYPE html>
   /* ── Spinner / loading ───────────────────────────────────────────────── */
   .spinner {
     display: inline-block; width: 18px; height: 18px;
-    border: 3px solid rgba(0,37,150,.2);
+    border: 3px solid rgba(170,85,160,.25);
     border-top-color: var(--primary);
     border-radius: 50%;
     animation: spin .8s linear infinite;
@@ -695,7 +697,7 @@ _HTML_UI = """<!DOCTYPE html>
     padding: 18px 20px;
     margin-bottom: 20px;
     display: none;
-    box-shadow: 0 1px 3px rgba(0,37,150,.06);
+    box-shadow: 0 1px 3px rgba(170,85,160,.08);
   }
   .export-panel-header {
     display: flex; justify-content: space-between; align-items: center;
@@ -744,7 +746,7 @@ _HTML_UI = """<!DOCTYPE html>
     border-radius: 4px;
     padding: 16px 20px;
     flex: 1; min-width: 140px;
-    box-shadow: 0 1px 3px rgba(0,37,150,.06);
+    box-shadow: 0 1px 3px rgba(170,85,160,.08);
   }
   .kpi-value {
     font-family: "Exo", sans-serif;
@@ -761,7 +763,7 @@ _HTML_UI = """<!DOCTYPE html>
     overflow-x: auto;
     border: 1px solid var(--border);
     border-radius: 4px;
-    box-shadow: 0 1px 3px rgba(0,37,150,.04);
+    box-shadow: 0 1px 3px rgba(170,85,160,.06);
   }
   .dash-table-wrap table { min-width: 800px; border: none; border-radius: 0; }
 
