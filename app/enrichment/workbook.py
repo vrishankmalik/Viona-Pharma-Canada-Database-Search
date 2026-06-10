@@ -565,15 +565,25 @@ def build_sheet2(response: SearchResponse) -> pd.DataFrame:
 # ── Workbook assembly ─────────────────────────────────────────────────────────
 
 def _style_sheet(worksheet: Any, df: pd.DataFrame) -> None:
-    """Apply bold header, freeze row, autofilter, and autosized columns."""
-    from openpyxl.styles import Font, PatternFill, Alignment
+    """Apply bold header, freeze row, autofilter, borders, banding, and autosized columns."""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
-    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    _thin = Side(style="thin", color="D1D1D1")
+    _med  = Side(style="medium", color="A0A0A0")
+    cell_border   = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    header_border = Border(left=_thin, right=_thin, top=_med,  bottom=_med)
+
+    header_fill = PatternFill(start_color="3D226E", end_color="3D226E", fill_type="solid")
+    band_fill   = PatternFill(start_color="F5F0FA", end_color="F5F0FA", fill_type="solid")
+    white_fill  = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+    worksheet.row_dimensions[1].height = 26
     for cell in worksheet[1]:
-        cell.font = Font(bold=True, name="Calibri", size=10)
+        cell.font = Font(bold=True, name="Calibri", size=10, color="FFFFFF")
         cell.fill = header_fill
-        cell.alignment = Alignment(wrap_text=False)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+        cell.border = header_border
 
     worksheet.freeze_panes = "A2"
 
@@ -586,12 +596,17 @@ def _style_sheet(worksheet: Any, df: pd.DataFrame) -> None:
             df[col].fillna("").astype(str).str.len().max()
             if not df.empty else 0
         )
-        width = min(max(len(str(col)) + 2, int(max_val_len or 0) + 2), 60)
+        width = min(max(len(str(col)) + 4, int(max_val_len or 0) + 3), 55)
         worksheet.column_dimensions[get_column_letter(i)].width = width
 
-    for row in worksheet.iter_rows(min_row=2):
+    for r_idx, row in enumerate(worksheet.iter_rows(min_row=2)):
+        worksheet.row_dimensions[r_idx + 2].height = 18
+        fill = band_fill if r_idx % 2 == 0 else white_fill
         for cell in row:
             cell.font = Font(name="Calibri", size=10)
+            cell.fill = fill
+            cell.border = cell_border
+            cell.alignment = Alignment(vertical="center", wrap_text=False)
 
 
 def _build_status_sheet(
@@ -758,13 +773,37 @@ def _write_multiblock_sheet(
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
 
+    from openpyxl.styles import Border, Side
+
     KEY_ROW = 1
     BANNER_ROW = 2
     HEADER_ROW = 3
     DATA_START = 4
 
-    HEADER_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-    KEY_LABEL_FILL = PatternFill(start_color="404040", end_color="404040", fill_type="solid")
+    # ── Style constants ────────────────────────────────────────────────────────
+    HEADER_FILL  = PatternFill(start_color="3D226E", end_color="3D226E", fill_type="solid")
+    KEY_LABEL_FILL = PatternFill(start_color="3D226E", end_color="3D226E", fill_type="solid")
+    WHITE_FILL   = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+    _thin = Side(style="thin", color="D1D1D1")
+    _med  = Side(style="medium", color="A0A0A0")
+    CELL_BORDER   = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    HEADER_BORDER = Border(left=_thin, right=_thin, top=_med,  bottom=_med)
+
+    # Status → font color (dark readable shades)
+    _STATUS_COLOR = {
+        "marketed":  "1A6B3C",
+        "approved":  "1A6B3C",
+        "cancelled": "9B1C1C",
+        "dormant":   "7A4F00",
+        "inactive":  "7A4F00",
+    }
+
+    # Minimum column widths for well-known short fields
+    _MIN_WIDTHS = {
+        "din": 12, "status": 13, "form": 13, "route": 13,
+        "strength": 14, "noc_date": 13, "patent_count": 10,
+    }
 
     # ── Compute column ranges for each block ──────────────────────────────────
     block_col_ranges: list[tuple[int, int]] = []
@@ -780,57 +819,75 @@ def _write_multiblock_sheet(
     label_cell.font = Font(bold=True, name="Calibri", size=10, color="FFFFFF")
     label_cell.fill = KEY_LABEL_FILL
     label_cell.alignment = Alignment(horizontal="left", vertical="center")
-    ws.column_dimensions["A"].width = 14
+    label_cell.border = CELL_BORDER
+    ws.column_dimensions["A"].width = 15
 
     for i, ((name, _df), color) in enumerate(zip(blocks, colors)):
-        key_col = 2 + i  # compact row: B, C, D, …
+        key_col = 2 + i
         cell = ws.cell(row=KEY_ROW, column=key_col)
         cell.value = name
         cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
         cell.font = Font(bold=True, name="Calibri", size=10)
         cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws.column_dimensions[get_column_letter(key_col)].width = max(len(name) + 4, 14)
+        cell.border = CELL_BORDER
+        ws.column_dimensions[get_column_letter(key_col)].width = max(len(name) + 4, 16)
 
-    ws.row_dimensions[KEY_ROW].height = 20
+    ws.row_dimensions[KEY_ROW].height = 22
 
     # ── Row 2: Banners ────────────────────────────────────────────────────────
     for (name, df), bcolor, (c_start, c_end) in zip(blocks, banner_colors, block_col_ranges):
         n_dins = len(df) if not df.empty else 0
-        banner_text = f"{name.upper()}  ({n_dins} DIN{'s' if n_dins != 1 else ''})"
+        banner_text = f"{name.upper()}  —  {n_dins} DIN{'s' if n_dins != 1 else ''}"
         cell = ws.cell(row=BANNER_ROW, column=c_start)
         cell.value = banner_text
         cell.fill = PatternFill(start_color=bcolor, end_color=bcolor, fill_type="solid")
-        cell.font = Font(bold=True, name="Calibri", size=11)
+        cell.font = Font(bold=True, name="Calibri", size=12)
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+        cell.border = Border(left=_med, right=_med, top=_med, bottom=_med)
         if c_end > c_start:
             ws.merge_cells(
                 start_row=BANNER_ROW, start_column=c_start,
                 end_row=BANNER_ROW, end_column=c_end,
             )
-    ws.row_dimensions[BANNER_ROW].height = 22
+    ws.row_dimensions[BANNER_ROW].height = 30
 
     # ── Row 3: Column headers ─────────────────────────────────────────────────
-    for (name, df), color, (c_start, c_end) in zip(blocks, colors, block_col_ranges):
+    for (name, df), (c_start, _c_end) in zip(blocks, block_col_ranges):
         cols = list(df.columns) if not df.empty else []
         for j, col_name in enumerate(cols):
             cell = ws.cell(row=HEADER_ROW, column=c_start + j)
-            cell.value = col_name
-            cell.font = Font(bold=True, name="Calibri", size=10)
+            cell.value = col_name.replace("_", " ").title()
+            cell.font = Font(bold=True, name="Calibri", size=10, color="FFFFFF")
             cell.fill = HEADER_FILL
-            cell.alignment = Alignment(wrap_text=False)
-    ws.row_dimensions[HEADER_ROW].height = 18
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+            cell.border = HEADER_BORDER
+    ws.row_dimensions[HEADER_ROW].height = 26
 
-    # ── Rows 4+: Data (top-aligned, ragged) ───────────────────────────────────
-    for (name, df), (c_start, _c_end) in zip(blocks, block_col_ranges):
+    # ── Rows 4+: Data ─────────────────────────────────────────────────────────
+    for (name, df), color, (c_start, _c_end) in zip(blocks, colors, block_col_ranges):
         if df.empty:
             continue
+        row_fill_a = PatternFill(start_color=color, end_color=color, fill_type="solid")
         for r_idx, (_idx, row_series) in enumerate(df.iterrows()):
             excel_row = DATA_START + r_idx
+            row_fill = row_fill_a if r_idx % 2 == 0 else WHITE_FILL
+            ws.row_dimensions[excel_row].height = 18
             for j, col_name in enumerate(df.columns):
                 val = _safe_cell_val(row_series[col_name])
                 cell = ws.cell(row=excel_row, column=c_start + j)
                 cell.value = val
-                cell.font = Font(name="Calibri", size=10)
+                cell.fill = row_fill
+                cell.border = CELL_BORDER
+                cell.alignment = Alignment(vertical="center", wrap_text=False)
+                # Status field coloring
+                status_key = str(val).lower().strip() if val is not None else ""
+                if col_name == "status" and status_key in _STATUS_COLOR:
+                    cell.font = Font(
+                        bold=True, name="Calibri", size=10,
+                        color=_STATUS_COLOR[status_key],
+                    )
+                else:
+                    cell.font = Font(name="Calibri", size=10)
 
     # ── Column widths ──────────────────────────────────────────────────────────
     for (name, df), (c_start, _c_end) in zip(blocks, block_col_ranges):
@@ -839,7 +896,8 @@ def _write_multiblock_sheet(
                 df[col_name].fillna("").astype(str).str.len().max()
                 if not df.empty else 0
             )
-            width = min(max(len(str(col_name)) + 2, int(max_val_len or 0) + 2), 60)
+            floor = _MIN_WIDTHS.get(col_name.lower(), 0)
+            width = min(max(len(str(col_name)) + 4, int(max_val_len or 0) + 3, floor), 55)
             ws.column_dimensions[get_column_letter(c_start + j)].width = width
 
     # ── Freeze top 3 rows (key + banner + header) ─────────────────────────────

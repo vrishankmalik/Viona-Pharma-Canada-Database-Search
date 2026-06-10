@@ -1063,10 +1063,10 @@ class TestMultiProductWorkbook:
         response = _make_response_for("alpelisib", ["02498014", "02498022"])
         xlsx, _, _ = build_workbook_multiproduct([("alpelisib", response)])
         ws = self._load_ws(xlsx, "DPD + NOC + Patents")
-        row3 = [v for v in self._read_row(ws, 3) if v is not None]
+        row3 = [str(v).lower() for v in self._read_row(ws, 3) if v is not None]
         assert "din" in row3, f"'din' header must be in row 3, got: {row3}"
         # Row 4 should contain a DIN value, not a header name
-        row4 = [v for v in self._read_row(ws, 4) if v is not None]
+        row4 = [str(v).lower() for v in self._read_row(ws, 4) if v is not None]
         assert row4, "Row 4 must contain data"
         assert "din" not in row4, "Row 4 must be data, not headers"
 
