@@ -795,8 +795,8 @@ _HTML_UI = """<!DOCTYPE html>
 <nav class="site-nav" role="navigation" aria-label="Site navigation">
   <img class="nav-zydus-logo" src="/static/zydus_logo.png" alt="Zydus" />
   <div class="site-nav-brand-wrap">
-    <span class="site-nav-brand">Viona Pharma</span>
-    <span class="site-nav-sub">A Zydus Company</span>
+    <span class="site-nav-brand">Zydus</span>
+    <span class="site-nav-sub">Dedicated To Life</span>
   </div>
   <span class="site-nav-divider"></span>
   <a class="site-nav-link" href="https://health-products.canada.ca/drug-product-database/" target="_blank" rel="noopener">DPD</a>
@@ -808,7 +808,7 @@ _HTML_UI = """<!DOCTYPE html>
     <img class="header-logo-viona" src="/static/viona_logo.png" alt="Viona" />
     <img class="header-logo-zydus" src="/static/zydus_logo.png" alt="Zydus" />
     <div>
-      <div class="header-company-name">Viona Pharma &nbsp;|&nbsp; A Zydus Company</div>
+      <div class="header-company-name">Zydus &nbsp;&mdash;&nbsp; Dedicated To Life</div>
       <h1>Canadian Drug Database Aggregator</h1>
     </div>
   </div>
@@ -886,7 +886,7 @@ _HTML_UI = """<!DOCTYPE html>
   </div>
 </div>
 <footer role="contentinfo">
-  <strong style="color:var(--primary);font-family:'Exo',sans-serif">Viona Pharma</strong> <span style="color:var(--muted);font-size:0.76rem">| A Zydus Company</span>
+  <strong style="color:var(--primary);font-family:'Exo',sans-serif">Zydus</strong> <span style="color:var(--muted);font-size:0.76rem">— Dedicated To Life</span>
   <br/>
   Data sourced from Health Canada public databases (DPD, NOC, Patent Register, GSUR). &nbsp;|&nbsp;
   Accuracy relies on deterministic extraction — no AI-generated data fields.
