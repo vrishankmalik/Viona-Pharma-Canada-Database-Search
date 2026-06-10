@@ -35,8 +35,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.cache import cache_get, cache_set
-from app.config import HTTP_TIMEOUT, PATENT_BASE, USER_AGENT
-from app.enrichment.store import get_patents_for_din, log_discrepancy, upsert_patent
+from app.config import HTTP_TIMEOUT, PATENT_BASE, PATENT_STORE_TTL, USER_AGENT
+from app.enrichment.store import get_patents_for_din, is_patent_stale, log_discrepancy, upsert_patent
 from app.sources.patent_register import (
     _get_dropdown_options as _pr_get_session,
     _parse_results_table as _pr_parse_table,
@@ -698,14 +698,13 @@ async def enrich_patents(
     if not dins:
         return {}
 
-    # Skip DINs already enriched (have at least one patent row in the store).
-    # This makes enrich_patents idempotent: a second call for the same DIN is a
-    # no-op so concurrent export paths don't overwrite each other's data.
-    unenriched = [d for d in dins if not get_patents_for_din(d)]
+    # Skip DINs whose patent rows are still fresh (within PATENT_STORE_TTL).
+    # Stale or absent rows are re-fetched so new patents are picked up every 4 hours.
+    unenriched = [d for d in dins if is_patent_stale(d, PATENT_STORE_TTL)]
     already_enriched = [d for d in dins if d not in set(unenriched)]
     if already_enriched:
         logger.debug(
-            "enrich_patents: skipping %d already-stored DINs: %s",
+            "enrich_patents: skipping %d fresh DINs (within TTL): %s",
             len(already_enriched), already_enriched[:10],
         )
     if not unenriched:

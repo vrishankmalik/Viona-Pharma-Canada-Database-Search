@@ -47,9 +47,10 @@ ENABLE_OCR = bool(int(os.getenv("ENABLE_OCR", "1")))
 # Concurrent PDF downloads + labeling enrichments in the async export job
 LABELING_SEMAPHORE = int(os.getenv("LABELING_SEMAPHORE", "8"))
 
-# Enrichment store TTL: labeling records older than this are re-fetched on each export.
-# HTTP caches (PDFs, DPD API) are unaffected — only the stored analysis result is refreshed.
-LABELING_STORE_TTL = int(os.getenv("LABELING_STORE_TTL", str(2 * 60 * 60)))  # 2 hours
+# Enrichment store TTLs: records older than these are re-fetched on the next export.
+# HTTP caches (DPD API, Patent.zip) are unaffected — only the stored results are refreshed.
+LABELING_STORE_TTL = int(os.getenv("LABELING_STORE_TTL", str(2 * 60 * 60)))   # 2 hours
+PATENT_STORE_TTL   = int(os.getenv("PATENT_STORE_TTL",   str(4 * 60 * 60)))   # 4 hours
 
 # Workbook column pruning: drop Sheet 1 columns whose non-empty fill rate is at or below
 # this threshold.  0.0 = strict (only truly-all-empty columns dropped).
