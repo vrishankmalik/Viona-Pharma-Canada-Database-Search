@@ -49,8 +49,8 @@ CREATE TABLE IF NOT EXISTS labeling (
     pack_size_page                  INTEGER,
     pack_style                      TEXT,
     pack_style_page                 INTEGER,
-    colour                          TEXT,
-    colour_page                     INTEGER,
+    color                           TEXT,
+    color_page                      INTEGER,
     shape                           TEXT,
     shape_page                      INTEGER,
     size_mm                         TEXT,
@@ -82,6 +82,12 @@ def _open() -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE labeling ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
             pass  # column already exists
+    # Rename colour → color if the old column still exists.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(labeling)")}
+    if "colour" in cols and "color" not in cols:
+        conn.execute("ALTER TABLE labeling RENAME COLUMN colour TO color")
+    if "colour_page" in cols and "color_page" not in cols:
+        conn.execute("ALTER TABLE labeling RENAME COLUMN colour_page TO color_page")
     conn.commit()
     return conn
 
@@ -164,7 +170,7 @@ _LABELING_COLS = (
     "nonmedicinal_ingredients", "nonmedicinal_ingredients_page",
     "pack_size", "pack_size_page",
     "pack_style", "pack_style_page",
-    "colour", "colour_page",
+    "color", "color_page",
     "shape", "shape_page",
     "size_mm", "size_mm_page",
     "weight", "weight_page",

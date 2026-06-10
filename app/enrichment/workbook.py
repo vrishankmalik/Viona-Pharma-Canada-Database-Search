@@ -64,7 +64,7 @@ _NEVER_DROP_COLS = frozenset({
     # Labeling
     "active_ingredient", "nonmedicinal_ingredients",
     "pack_size", "pack_style",
-    "colour", "shape", "size_mm", "weight", "ph",
+    "color", "shape", "size_mm", "weight", "ph",
     # Data protection (always present even when no record matches)
     "dp_6yr_no_file_date", "pediatric_extension", "data_protection_ends",
 })
@@ -80,7 +80,7 @@ _SHEET1_PRE_PATENT_COLS = (
 )
 _SHEET1_POST_PATENT_COLS = (
     "active_ingredient", "nonmedicinal_ingredients",
-    "pack_size", "pack_style", "colour", "shape", "size_mm",
+    "pack_size", "pack_style", "color", "shape", "size_mm",
     "weight", "ph", "needs_ocr",
     "dp_6yr_no_file_date", "pediatric_extension", "data_protection_ends",
 )
@@ -217,7 +217,7 @@ _NO_NOC_RECORD = {
 _LABELING_FIELDS = (
     "active_ingredient", "nonmedicinal_ingredients",
     "pack_size", "pack_style",
-    "colour", "shape", "size_mm", "weight", "ph",
+    "color", "shape", "size_mm", "weight", "ph",
 )
 
 

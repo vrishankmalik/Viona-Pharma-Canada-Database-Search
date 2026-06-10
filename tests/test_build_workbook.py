@@ -243,7 +243,7 @@ def test_build_workbook_sheet1_has_labeling_columns(tmp_path):
     store_mod.upsert_labeling("02498014", {
         "active_ingredient": "alpelisib",
         "nonmedicinal_ingredients": "colloidal silicon dioxide, lactose monohydrate",
-        "colour": "Pink",
+        "color": "Pink",
         "shape": "Round",
         "ph": "Not stated",
         "needs_ocr": 0,
@@ -256,7 +256,7 @@ def test_build_workbook_sheet1_has_labeling_columns(tmp_path):
 
     response = _make_response(dpd_records=[_dpd("02498014")])
     df = build_sheet1(response)
-    for col in ("nonmedicinal_ingredients", "colour", "shape", "ph"):
+    for col in ("nonmedicinal_ingredients", "color", "shape", "ph"):
         assert col in df.columns, f"Expected labeling column '{col}' in Sheet 1"
     # Old columns must be absent
     for old_col in ("excipients_core", "excipients_coating", "preservatives"):
@@ -596,20 +596,20 @@ def test_single_nonempty_row_prevents_column_drop(tmp_path):
     import app.enrichment.store as store_mod
     store_mod.reset_for_testing(str(tmp_path / "enrich.db"))
 
-    # Give one DIN a labeling colour; other DIN has nothing
+    # Give one DIN a labeling color; other DIN has nothing
     store_mod.upsert_labeling("02498014", {
-        "colour": "blue", "needs_ocr": 0, "has_unverified": 0,
+        "color": "blue", "needs_ocr": 0, "has_unverified": 0,
         "drug_code": 99001, "fetched_at": time.time(),
     })
-    # 02498022 has no labeling → colour=None for that row
+    # 02498022 has no labeling → color=None for that row
 
     from app.enrichment.workbook import build_sheet1
 
     response = _make_response(dpd_records=[_dpd("02498014"), _dpd("02498022")])
     df = build_sheet1(response)
 
-    assert "colour" in df.columns, (
-        "colour must be kept: 02498014 has a non-empty value even though 02498022 is None"
+    assert "color" in df.columns, (
+        "color must be kept: 02498014 has a non-empty value even though 02498022 is None"
     )
 
 

@@ -97,7 +97,7 @@ def detect_stages(df: pd.DataFrame) -> dict[str, bool]:
 
     labeling_cols = [
         "active_ingredient", "nonmedicinal_ingredients",
-        "ph", "colour", "shape", "size_mm", "weight",
+        "ph", "color", "shape", "size_mm", "weight",
     ]
     patent_cols = [c for c in cols if re.match(r"patent_\d+_number$", c)]
     noc_data_cols = ["noc_date", "noc_submission_type"]
@@ -333,8 +333,8 @@ def check_ph(din: str, val: Any) -> list[Finding]:
 
 
 
-def check_colour(din: str, val: Any) -> list[Finding]:
-    """Each comma/slash-separated part must contain at least one known colour word."""
+def check_color(din: str, val: Any) -> list[Finding]:
+    """Each comma/slash-separated part must contain at least one known color word."""
     if _is_sentinel(val):
         return []
     s     = str(val).strip().lower()
@@ -342,8 +342,8 @@ def check_colour(din: str, val: Any) -> list[Finding]:
     out: list[Finding] = []
     for part in parts:
         if not any(re.search(r"\b" + re.escape(c) + r"\b", part) for c in _KNOWN_COLOURS):
-            out.append(Finding("F1_COLOUR_NOVEL", din, "colour", "WARN", str(val)[:80],
-                               f"Colour part '{part}' contains no known colour vocab word", 1))
+            out.append(Finding("F1_COLOUR_NOVEL", din, "color", "WARN", str(val)[:80],
+                               f"Color part '{part}' contains no known color vocab word", 1))
     return out
 
 
@@ -461,9 +461,9 @@ def check_column_names(columns: list[str]) -> list[Finding]:
         if col.endswith("_page"):
             out.append(Finding("F1_COL_PAGE", "(header)", col, "ERROR", col,
                                "_page citation columns removed in Change 2; must not appear", 1))
-        if "color" in col.lower() and "colour" not in col.lower():
+        if "color" in col.lower():
             out.append(Finding("F1_COL_SPELLING", "(header)", col, "ERROR", col,
-                               "Column uses 'color' (US); must be 'colour' (CA)", 1))
+                               "Column uses 'color' (CA spelling); must be 'color'", 1))
     return out
 
 
@@ -497,7 +497,7 @@ def run_family1(
             out.extend(check_pack_size(din,  rdict.get("pack_size")))
             out.extend(check_size_mm(din,    rdict.get("size_mm")))
             out.extend(check_ph(din,         rdict.get("ph")))
-            out.extend(check_colour(din,     rdict.get("colour")))
+            out.extend(check_color(din,     rdict.get("color")))
             out.extend(check_shape(din,      rdict.get("shape")))
 
         out.extend(check_noc_consistency(din, rdict))
@@ -510,7 +510,7 @@ def run_family1(
 
 _PM_FIELDS = frozenset({
     "nonmedicinal_ingredients",
-    "ph", "colour", "shape", "size_mm", "weight",
+    "ph", "color", "shape", "size_mm", "weight",
 })
 _LIQUID_FORMS = frozenset({
     "solution", "liquid", "injection", "infusion",
@@ -558,12 +558,12 @@ def run_family2(
 
             nm_real    = (_is_real(rdict.get("nonmedicinal_ingredients")) and
                           not _is_no_pm(rdict.get("nonmedicinal_ingredients")))
-            clr_absent = _is_sentinel(rdict.get("colour")) or _is_no_pm(rdict.get("colour"))
+            clr_absent = _is_sentinel(rdict.get("color")) or _is_no_pm(rdict.get("color"))
             shp_absent = _is_sentinel(rdict.get("shape"))  or _is_no_pm(rdict.get("shape"))
             if nm_real and clr_absent and shp_absent:
-                out.append(Finding("F2_NM_NO_APPEARANCE", din, "colour,shape", "WARN",
+                out.append(Finding("F2_NM_NO_APPEARANCE", din, "color,shape", "WARN",
                                    str(rdict.get("nonmedicinal_ingredients"))[:60],
-                                   "nonmedicinal_ingredients populated but both colour and shape absent — "
+                                   "nonmedicinal_ingredients populated but both color and shape absent — "
                                    "same §6 section", 2))
 
             wt_real   = _is_real(rdict.get("weight"))  and not _is_no_pm(rdict.get("weight"))
@@ -1002,7 +1002,7 @@ async def run_family3(
 
 _EXTRACT_FIELDS = (
     "nonmedicinal_ingredients",
-    "colour", "shape", "size_mm", "weight", "ph",
+    "color", "shape", "size_mm", "weight", "ph",
 )
 
 _SYNTH_FONT_PATHS = [
@@ -1517,7 +1517,7 @@ def format_report(
 
     if not labeling_active:
         lines.append(
-            "- **Labeling fields (active_ingredient, excipients, pH, colour, shape, etc.):** "
+            "- **Labeling fields (active_ingredient, excipients, pH, color, shape, etc.):** "
             "UNVERIFIED — labeling stage was not run for this workbook."
         )
 

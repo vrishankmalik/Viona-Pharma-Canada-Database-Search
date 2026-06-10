@@ -29,7 +29,7 @@ from grade_workbook import (
     check_pack_size,
     check_size_mm,
     check_ph,
-    check_colour,
+    check_color,
     check_shape,
     check_noc_consistency,
     check_patent_count,
@@ -244,28 +244,28 @@ class TestCheckPh:
         assert any(f.check_id in ("F1_PH_FORMAT", "F1_PH_RANGE") for f in findings)
 
 
-# ─── check_colour ─────────────────────────────────────────────────────────────
+# ─── check_color ─────────────────────────────────────────────────────────────
 
-class TestCheckColour:
+class TestCheckColor:
     def test_white_ok(self):
-        assert check_colour("12345678", "white") == []
+        assert check_color("12345678", "white") == []
 
     def test_light_blue_ok(self):
-        assert check_colour("12345678", "light blue") == []
+        assert check_color("12345678", "light blue") == []
 
     def test_pale_yellow_ok(self):
-        assert check_colour("12345678", "pale yellow") == []
+        assert check_color("12345678", "pale yellow") == []
 
     def test_sentinel_ok(self):
-        assert check_colour("12345678", NOT_IN_PM) == []
+        assert check_color("12345678", NOT_IN_PM) == []
 
-    def test_novel_colour_warns(self):
-        findings = check_colour("12345678", "cerulean")
+    def test_novel_color_warns(self):
+        findings = check_color("12345678", "cerulean")
         assert any(f.check_id == "F1_COLOUR_NOVEL" and f.severity == "WARN"
                    for f in findings)
 
-    def test_multi_colour_one_novel(self):
-        findings = check_colour("12345678", "white, cerulean")
+    def test_multi_color_one_novel(self):
+        findings = check_color("12345678", "white, cerulean")
         novel = [f for f in findings if f.check_id == "F1_COLOUR_NOVEL"]
         assert len(novel) >= 1
 
@@ -447,7 +447,7 @@ class TestCheckPatentCount:
 
 class TestCheckColumnNames:
     def test_clean_columns_ok(self):
-        assert check_column_names(["din", "brand_name", "patent_1_number", "colour"]) == []
+        assert check_column_names(["din", "brand_name", "patent_1_number", "color"]) == []
 
     def test_url_column_flagged(self):
         findings = check_column_names(["din", "record_url"])
@@ -461,8 +461,8 @@ class TestCheckColumnNames:
         findings = check_column_names(["din", "color"])
         assert any(f.check_id == "F1_COL_SPELLING" for f in findings)
 
-    def test_colour_ok(self):
-        assert check_column_names(["colour"]) == []
+    def test_color_ok(self):
+        assert check_column_names(["color"]) == []
 
 
 # ─── Stage detection ─────────────────────────────────────────────────────────
@@ -537,7 +537,7 @@ class TestFamily1StageAware:
             "pack_size": NOT_IN_PM,
             "size_mm": NOT_IN_PM,
             "ph": NOT_IN_PM,
-            "colour": NOT_IN_PM,
+            "color": NOT_IN_PM,
             "shape": NOT_IN_PM,
             "noc_date": NO_NOC_RECORD,
             "noc_submission_type": NO_NOC_RECORD,
@@ -587,7 +587,7 @@ def _make_df(**kwargs) -> pd.DataFrame:
         "active_ingredient": "alpelisib",
         "nonmedicinal_ingredients": NOT_IN_PM,
         "ph": NOT_IN_PM,
-        "colour": NOT_IN_PM,
+        "color": NOT_IN_PM,
         "shape": NOT_IN_PM,
         "size_mm": NOT_IN_PM,
         "weight": NOT_IN_PM,
@@ -625,7 +625,7 @@ class TestFamily2Coherence:
     def test_pm_mixed_sentinel_error(self):
         df = _make_df(
             nonmedicinal_ingredients="microcrystalline cellulose",
-            colour=NO_PM_AVAILABLE,
+            color=NO_PM_AVAILABLE,
             shape=NO_PM_AVAILABLE,
         )
         findings = run_family2(df, stages={"LABELING": True})
@@ -634,7 +634,7 @@ class TestFamily2Coherence:
     def test_pm_mixed_sentinel_skipped_without_labeling(self):
         df = _make_df(
             nonmedicinal_ingredients="microcrystalline cellulose",
-            colour=NO_PM_AVAILABLE,
+            color=NO_PM_AVAILABLE,
         )
         findings = run_family2(df, stages={"LABELING": False})
         assert not any(f.check_id == "F2_PM_MIXED_SENTINEL" for f in findings)
@@ -642,7 +642,7 @@ class TestFamily2Coherence:
     def test_nm_no_appearance_warn(self):
         df = _make_df(
             nonmedicinal_ingredients="microcrystalline cellulose, stearic acid",
-            colour=NOT_IN_PM,
+            color=NOT_IN_PM,
             shape=NOT_IN_PM,
         )
         findings = run_family2(df, stages={"LABELING": True})

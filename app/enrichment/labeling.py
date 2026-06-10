@@ -11,7 +11,7 @@ Stage 2 (this file, top half): DPD API + info page
 Stage 3 (this file, bottom half): PDF extraction
   Fields extracted ONLY from the PDF:
     nonmedicinal_ingredients (verbatim copy from PM),
-    ph, colour, shape, size_mm, weight
+    ph, color, shape, size_mm, weight
   Per-strength matching: use the DIN's strength to scope §6 Description block.
   Section location by keyword → only that section passed to Ollama or regex.
   If Ollama (llama3) is available it is preferred for appearance; regex is used
@@ -115,7 +115,7 @@ _MIN_TEXT_CHARS = 50
 _LABELING_FIELDS = (
     "active_ingredient", "nonmedicinal_ingredients",
     "pack_size", "pack_style",
-    "colour", "shape", "size_mm", "weight", "ph",
+    "color", "shape", "size_mm", "weight", "ph",
 )
 
 # Fields sourced from DPD API (Stage 2) — never extracted from PDF
@@ -738,7 +738,7 @@ async def _query_ollama(section_text: str, page_num: int, field_group: str) -> d
     """
     if field_group == "appearance":
         fields_desc = {
-            "colour": "Colour(s) of the tablet/capsule/product (e.g. 'white', 'light blue').",
+            "color": "Color(s) of the tablet/capsule/product (e.g. 'white', 'light blue').",
             "shape": "Shape (e.g. 'round', 'oval', 'oblong', 'biconvex'). Null if absent.",
             "size_mm": "Dimensions in mm (e.g. '9.5 mm', '11 × 7 mm'). Null if absent.",
             "weight": "Weight of the dosage unit in mg (e.g. '325 mg tablet weight'). Null if absent.",
@@ -1062,8 +1062,8 @@ def _extract_appearance_regex(
     desc_text: str,
     target_strength: Optional[str],
 ) -> dict[str, Optional[str]]:
-    """Extract colour/shape/size/weight, scoped to target_strength block if possible."""
-    out: dict[str, Optional[str]] = {"colour": None, "shape": None, "size_mm": None, "weight": None}
+    """Extract color/shape/size/weight, scoped to target_strength block if possible."""
+    out: dict[str, Optional[str]] = {"color": None, "shape": None, "size_mm": None, "weight": None}
 
     block_text = desc_text
     if target_strength:
@@ -1087,7 +1087,7 @@ def _extract_appearance_regex(
 
     cm = re.search(_COLOUR_WORDS, block_text, re.IGNORECASE)
     if cm:
-        out["colour"] = cm.group(0).strip()
+        out["color"] = cm.group(0).strip()
 
     sm = re.search(_SHAPE_WORDS, block_text, re.IGNORECASE)
     if sm:
@@ -1135,7 +1135,7 @@ async def parse_labeling_fields_async(
 ) -> dict:
     """Extract Stage 3 label fields from pre-extracted PDF pages.
 
-    Only extracts: nonmedicinal_ingredients, ph, colour, shape, size_mm, weight.
+    Only extracts: nonmedicinal_ingredients, ph, color, shape, size_mm, weight.
     Does NOT extract: active_ingredient, pack_size, pack_style
                       (those come from Stage 2 / DPD API).
     nonmedicinal_ingredients is always extracted via regex (verbatim copy, not via LLM).
@@ -1189,7 +1189,7 @@ async def parse_labeling_fields_async(
             _ph_query(),
         )
 
-        _apply_ollama_result(row, ollama_b, ["colour", "shape", "size_mm", "weight"], desc_page)
+        _apply_ollama_result(row, ollama_b, ["color", "shape", "size_mm", "weight"], desc_page)
         if s13_text:
             _apply_ollama_result(row, ollama_c, ["ph"], s13_page)
         else:
@@ -1213,9 +1213,9 @@ async def parse_labeling_fields_async(
             norm_strength = _normalize_strength(din_strength) if din_strength else None
             app = _extract_appearance_regex(desc_text, norm_strength)
         else:
-            app = {"colour": None, "shape": None, "size_mm": None, "weight": None}
+            app = {"color": None, "shape": None, "size_mm": None, "weight": None}
 
-        for field in ("colour", "shape", "size_mm", "weight"):
+        for field in ("color", "shape", "size_mm", "weight"):
             val = app.get(field)
             row[field] = val if val else NOT_IN_PM
             row[f"{field}_page"] = desc_page if val else None
@@ -1248,7 +1248,7 @@ def parse_labeling_fields(
 # ── Public named wrappers for test introspection ──────────────────────────────
 
 def _extract_strength_block(description: str, target_strength: str) -> dict[str, Optional[str]]:
-    """Public alias used by tests: extract colour/shape/size/weight for one strength."""
+    """Public alias used by tests: extract color/shape/size/weight for one strength."""
     return _extract_appearance_regex(description, target_strength)
 
 
@@ -1416,7 +1416,7 @@ async def enrich_labeling_batch_fast(
       DINs sharing the same Product Monograph URL trigger one PDF download and
       one pdfplumber/OCR extraction pass.  parse_labeling_fields_async() is
       then called per-DIN with its specific strength so per-strength appearance
-      fields (colour, shape, size) are extracted correctly.
+      fields (color, shape, size) are extracted correctly.
 
     Speedup 3 — thread pool (via _extract_text_async):
       PDF extraction is CPU-bound and synchronous.  Running it in the thread
