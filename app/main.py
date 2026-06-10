@@ -10,6 +10,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.config import LABELING_STORE_TTL, SOURCE_TIMEOUT
@@ -30,6 +31,10 @@ from app.sources.noc import search_noc
 from app.sources.patent_register import search_patent_register
 
 app = FastAPI(title="Canadian Drug Database Aggregator", version="1.0.0")
+
+import pathlib as _pathlib
+_static_dir = _pathlib.Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 async def _timed_source(coro, source_name: str) -> SourceResult:
@@ -356,21 +361,12 @@ _HTML_UI = """<!DOCTYPE html>
     height: 52px;
     gap: 16px;
   }
-  .zydus-z {
-    font-family: "Exo", sans-serif;
-    font-weight: 900;
-    font-size: 1.25rem;
-    color: #fff;
-    background: var(--primary);
-    width: 34px;
-    height: 34px;
-    border-radius: 5px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  .nav-zydus-logo {
+    height: 28px;
+    width: auto;
     flex-shrink: 0;
-    border: 2px solid rgba(255,255,255,0.18);
-    letter-spacing: -0.02em;
+    filter: brightness(0) invert(1);
+    opacity: 0.92;
   }
   .site-nav-brand-wrap { display: flex; flex-direction: column; gap: 0; }
   .site-nav-brand {
@@ -412,23 +408,21 @@ _HTML_UI = """<!DOCTYPE html>
     gap: 18px;
     margin-bottom: 10px;
   }
-  .header-vmark {
-    font-family: "Exo", sans-serif;
-    font-weight: 900;
-    font-size: 1.9rem;
-    color: white;
-    background: rgba(255,255,255,0.13);
-    border: 2px solid rgba(255,255,255,0.28);
-    width: 56px;
+  .header-logo-viona {
     height: 56px;
-    border-radius: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    width: auto;
     flex-shrink: 0;
-    letter-spacing: -0.03em;
+    filter: brightness(0) invert(1);
+    opacity: 0.95;
   }
-  .header-vmark span { font-size: 1rem; font-weight: 600; opacity: .7; vertical-align: super; margin-left: 1px; }
+  .header-logo-zydus {
+    height: 40px;
+    width: auto;
+    flex-shrink: 0;
+    filter: brightness(0) invert(1);
+    opacity: 0.88;
+    margin-left: 4px;
+  }
   .header-company-name {
     font-size: 0.68rem;
     text-transform: uppercase;
@@ -799,7 +793,7 @@ _HTML_UI = """<!DOCTYPE html>
 </head>
 <body>
 <nav class="site-nav" role="navigation" aria-label="Site navigation">
-  <div class="zydus-z" aria-hidden="true">Z</div>
+  <img class="nav-zydus-logo" src="/static/zydus_logo.png" alt="Zydus" />
   <div class="site-nav-brand-wrap">
     <span class="site-nav-brand">Viona Pharma</span>
     <span class="site-nav-sub">A Zydus Company</span>
@@ -811,7 +805,8 @@ _HTML_UI = """<!DOCTYPE html>
 </nav>
 <header role="banner">
   <div class="header-brand-row">
-    <div class="header-vmark" aria-hidden="true">VP<span>®</span></div>
+    <img class="header-logo-viona" src="/static/viona_logo.png" alt="Viona" />
+    <img class="header-logo-zydus" src="/static/zydus_logo.png" alt="Zydus" />
     <div>
       <div class="header-company-name">Viona Pharma &nbsp;|&nbsp; A Zydus Company</div>
       <h1>Canadian Drug Database Aggregator</h1>
