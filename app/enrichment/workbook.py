@@ -591,22 +591,32 @@ def _style_sheet(worksheet: Any, df: pd.DataFrame) -> None:
         last_col = get_column_letter(len(df.columns))
         worksheet.auto_filter.ref = f"A1:{last_col}1"
 
+    import math as _math
+    LINE_HEIGHT_PT = 15.0
+
+    col_widths: list[float] = []
     for i, col in enumerate(df.columns, 1):
         max_val_len = (
             df[col].fillna("").astype(str).str.len().max()
             if not df.empty else 0
         )
-        width = min(max(len(str(col)) + 4, int(max_val_len or 0) + 3), 55)
+        width = min(max(len(str(col)) + 4, int(max_val_len or 0) + 3), 42)
         worksheet.column_dimensions[get_column_letter(i)].width = width
+        col_widths.append(width)
 
     for r_idx, row in enumerate(worksheet.iter_rows(min_row=2)):
-        worksheet.row_dimensions[r_idx + 2].height = 18
         fill = band_fill if r_idx % 2 == 0 else white_fill
-        for cell in row:
+        max_lines = 1
+        for j, cell in enumerate(row):
             cell.font = Font(name="Calibri", size=10)
             cell.fill = fill
             cell.border = cell_border
-            cell.alignment = Alignment(vertical="center", wrap_text=False)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            col_w = col_widths[j] if j < len(col_widths) else 20
+            text_len = len(str(cell.value)) if cell.value is not None else 0
+            lines = _math.ceil(text_len / max(col_w, 1)) if text_len else 1
+            max_lines = max(max_lines, lines)
+        worksheet.row_dimensions[r_idx + 2].height = max(LINE_HEIGHT_PT, max_lines * LINE_HEIGHT_PT)
 
 
 def _build_status_sheet(
@@ -863,7 +873,24 @@ def _write_multiblock_sheet(
             cell.border = HEADER_BORDER
     ws.row_dimensions[HEADER_ROW].height = 26
 
-    # ── Rows 4+: Data ─────────────────────────────────────────────────────────
+    # ── Column widths (computed first — needed for row-height estimation) ─────
+    # col_widths_map: excel_col_index → width in chars
+    col_widths_map: dict[int, float] = {}
+    for (name, df), (c_start, _c_end) in zip(blocks, block_col_ranges):
+        for j, col_name in enumerate(df.columns if not df.empty else []):
+            max_val_len = (
+                df[col_name].fillna("").astype(str).str.len().max()
+                if not df.empty else 0
+            )
+            floor = _MIN_WIDTHS.get(col_name.lower(), 0)
+            width = min(max(len(str(col_name)) + 4, int(max_val_len or 0) + 3, floor), 42)
+            col_widths_map[c_start + j] = width
+            ws.column_dimensions[get_column_letter(c_start + j)].width = width
+
+    # ── Rows 4+: Data (wrap_text on, row heights auto-sized) ─────────────────
+    import math as _math
+    LINE_HEIGHT_PT = 15.0  # Calibri 10pt ≈ 15pt per line
+
     for (name, df), color, (c_start, _c_end) in zip(blocks, colors, block_col_ranges):
         if df.empty:
             continue
@@ -871,15 +898,14 @@ def _write_multiblock_sheet(
         for r_idx, (_idx, row_series) in enumerate(df.iterrows()):
             excel_row = DATA_START + r_idx
             row_fill = row_fill_a if r_idx % 2 == 0 else WHITE_FILL
-            ws.row_dimensions[excel_row].height = 18
+            max_lines = 1
             for j, col_name in enumerate(df.columns):
                 val = _safe_cell_val(row_series[col_name])
                 cell = ws.cell(row=excel_row, column=c_start + j)
                 cell.value = val
                 cell.fill = row_fill
                 cell.border = CELL_BORDER
-                cell.alignment = Alignment(vertical="center", wrap_text=False)
-                # Status field coloring
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
                 status_key = str(val).lower().strip() if val is not None else ""
                 if col_name == "status" and status_key in _STATUS_COLOR:
                     cell.font = Font(
@@ -888,17 +914,12 @@ def _write_multiblock_sheet(
                     )
                 else:
                     cell.font = Font(name="Calibri", size=10)
-
-    # ── Column widths ──────────────────────────────────────────────────────────
-    for (name, df), (c_start, _c_end) in zip(blocks, block_col_ranges):
-        for j, col_name in enumerate(df.columns if not df.empty else []):
-            max_val_len = (
-                df[col_name].fillna("").astype(str).str.len().max()
-                if not df.empty else 0
-            )
-            floor = _MIN_WIDTHS.get(col_name.lower(), 0)
-            width = min(max(len(str(col_name)) + 4, int(max_val_len or 0) + 3, floor), 55)
-            ws.column_dimensions[get_column_letter(c_start + j)].width = width
+                # Estimate lines this cell needs given the column width
+                col_w = col_widths_map.get(c_start + j, 20)
+                text_len = len(str(val)) if val is not None else 0
+                lines = _math.ceil(text_len / max(col_w, 1)) if text_len else 1
+                max_lines = max(max_lines, lines)
+            ws.row_dimensions[excel_row].height = max(LINE_HEIGHT_PT, max_lines * LINE_HEIGHT_PT)
 
     # ── Freeze top 3 rows (key + banner + header) ─────────────────────────────
     ws.freeze_panes = "A4"
